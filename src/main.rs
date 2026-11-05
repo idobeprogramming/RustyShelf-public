@@ -1,9 +1,12 @@
 mod app;
 mod emulator;
+mod library;
 mod model;
+mod rom;
 mod scan;
 mod sources;
 mod store;
+mod style;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {

@@ -82,7 +82,7 @@ impl Game {
         installation: Installation,
     ) -> Self {
         let title = title.into();
-        let id = stable_id(&title, &installation.path);
+        let id = game_id(&title, &installation.path);
         Self {
             id,
             title,
@@ -92,6 +92,14 @@ impl Game {
             cover_path: None,
             installations: vec![installation],
         }
+    }
+}
+
+pub fn game_id(title: &str, path: &std::path::Path) -> String {
+    if let Some(console) = crate::rom::console(path) {
+        format!("rom-{}", stable_id(&format!("{console}:{title}"), path))
+    } else {
+        stable_id(title, path)
     }
 }
 

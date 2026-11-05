@@ -1,7 +1,4 @@
-use crate::{
-    emulator,
-    model::{Game, Installation, LaunchProfile, Launcher},
-};
+use crate::model::{Game, Installation, LaunchProfile, Launcher};
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -115,16 +112,19 @@ pub fn scan_roots(
                             current: entry.path().to_path_buf(),
                         }));
                     }
-                    if !entry.file_type().is_file() || !is_candidate_executable(entry.path()) {
-                        if entry.file_type().is_file() && emulator::is_disc_image(entry.path()) {
-                            if let Some(game) = candidate_from_disc_image(entry.path()) {
-                                emit(ScanEvent::Candidate(game));
-                            }
+                    if !entry.file_type().is_file() {
+                        continue;
+                    }
+                    if crate::rom::console(entry.path()).is_some() {
+                        if let Some(game) = candidate_from_disc_image(entry.path()) {
+                            emit(ScanEvent::Candidate(game));
                         }
                         continue;
                     }
-                    if let Some(game) = candidate_from_executable(entry.path()) {
-                        emit(ScanEvent::Candidate(game));
+                    if is_candidate_executable(entry.path()) {
+                        if let Some(game) = candidate_from_executable(entry.path()) {
+                            emit(ScanEvent::Candidate(game));
+                        }
                     }
                 }
                 Err(error) => {
@@ -321,6 +321,7 @@ fn candidate_from_disc_image(path: &Path) -> Option<Game> {
     if path
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("iso"))
+        && crate::rom::console(path) == Some("Console à préciser")
         && !path.ancestors().skip(1).any(|folder| {
             folder.file_name().is_some_and(|name| {
                 matches!(
@@ -342,7 +343,10 @@ fn candidate_from_disc_image(path: &Path) -> Option<Game> {
     }
     Some(Game::from_installation(
         title,
-        "Image disque · À confirmer",
+        format!(
+            "ROM · {}",
+            crate::rom::console(path).unwrap_or("Console à préciser")
+        ),
         Installation {
             path: path.to_path_buf(),
             launcher: Launcher::Unknown,
@@ -408,6 +412,29 @@ mod tests {
     use super::*;
     use std::{fs, sync::mpsc};
     use tempfile::tempdir;
+
+    #[test]
+    fn scans_console_roms_and_ignores_markdown_documents() {
+        let temp = tempdir().unwrap();
+        let roms = temp.path().join("roms/NES");
+        fs::create_dir_all(&roms).unwrap();
+        fs::write(roms.join("Étoiles.nes"), []).unwrap();
+        fs::write(roms.join("README.md"), b"documentation").unwrap();
+        let mut games = Vec::new();
+        scan_roots(
+            &[temp.path().to_owned()],
+            &[],
+            &ScanControl::default(),
+            |event| {
+                if let ScanEvent::Candidate(game) = event {
+                    games.push(game);
+                }
+            },
+        );
+        assert_eq!(games.len(), 1);
+        assert_eq!(crate::rom::game_console(&games[0]), Some("NES"));
+        assert!(!games[0].confirmed);
+    }
 
     #[test]
     fn exclusions_match_path_components_and_platform_case_rules() {

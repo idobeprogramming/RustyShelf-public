@@ -66,7 +66,19 @@ impl Store {
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
         for (old_id, title, category, favorite, confirmed, cover, custom_category) in records {
-            let new_id = crate::model::stable_id(&title, std::path::Path::new(""));
+            // Scoped ROM IDs remain stable even while their drive is disconnected.
+            if old_id.starts_with("rom-") {
+                continue;
+            }
+            let path: Option<String> = tx
+                .query_row(
+                    "SELECT path FROM installations WHERE game_id=?1 ORDER BY path LIMIT 1",
+                    [&old_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let new_id =
+                crate::model::game_id(&title, std::path::Path::new(path.as_deref().unwrap_or("")));
             if old_id == new_id {
                 continue;
             }
@@ -364,6 +376,28 @@ fn parse_launcher(value: &str) -> Launcher {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn same_title_on_two_consoles_stays_separate_after_reopening() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("library.db");
+        let store = Store::open(&path).unwrap();
+        for extension in ["nes", "sfc"] {
+            let game = Game::from_installation(
+                "Adventure",
+                "ROM",
+                Installation {
+                    path: temp.path().join(format!("adventure.{extension}")),
+                    launcher: Launcher::Unknown,
+                    launch_profile: None,
+                    available: false,
+                },
+            );
+            store.save_game(&game).unwrap();
+        }
+        drop(store);
+        assert_eq!(Store::open(&path).unwrap().games().unwrap().len(), 2);
+    }
 
     #[test]
     fn ignored_candidates_stay_hidden_after_rescan_and_can_be_restored() {

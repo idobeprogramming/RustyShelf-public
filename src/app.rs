@@ -1,8 +1,10 @@
 use crate::{
+    library::{Filters, GameKind, Sort},
     model::{Emulator, Game, Installation, LaunchProfile, Launcher},
     scan::{self, ScanControl, ScanEvent, Volume},
     sources,
     store::Store,
+    style::CustomStyle,
 };
 use eframe::egui::{self, Color32, RichText, TextureHandle, Vec2};
 use std::{
@@ -90,9 +92,11 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
     };
     match theme {
         Theme::Dark => {
-            visuals.panel_fill = Color32::from_rgb(17, 19, 26);
-            visuals.window_fill = Color32::from_rgb(24, 27, 36);
-            visuals.widgets.active.bg_fill = Color32::from_rgb(101, 86, 190);
+            visuals.panel_fill = Color32::from_rgb(21, 25, 31);
+            visuals.window_fill = Color32::from_rgb(32, 38, 48);
+            visuals.widgets.inactive.bg_fill = Color32::from_rgb(41, 49, 61);
+            visuals.widgets.hovered.bg_fill = Color32::from_rgb(53, 64, 79);
+            visuals.widgets.active.bg_fill = Color32::from_rgb(229, 162, 112);
         }
         Theme::Light => {
             visuals.panel_fill = Color32::from_rgb(239, 242, 248);
@@ -144,7 +148,14 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
             visuals.window_corner_radius = egui::CornerRadius::same(18);
         }
     }
+    visuals.selection.bg_fill = theme_accent(theme);
+    visuals.selection.stroke.color = crate::style::text_on(theme_accent(theme));
     ctx.set_visuals(visuals);
+    ctx.style_mut(|style| {
+        style.spacing.item_spacing = egui::vec2(10.0, 10.0);
+        style.spacing.button_padding = egui::vec2(12.0, 7.0);
+        style.spacing.interact_size.y = 30.0;
+    });
 }
 
 fn tr(language: Language, french: &'static str, english: &'static str) -> &'static str {
@@ -152,6 +163,14 @@ fn tr(language: Language, french: &'static str, english: &'static str) -> &'stat
         Language::French => french,
         Language::English => english,
     }
+}
+
+fn load_mapping(store: Option<&Store>, key: &str) -> HashMap<String, String> {
+    store
+        .and_then(|store| store.preference(key).ok())
+        .flatten()
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default()
 }
 
 fn launcher_label(launcher: &Launcher, language: Language) -> &'static str {
@@ -192,6 +211,13 @@ pub struct RustyShelfApp {
     theme: Theme,
     emulators: Vec<Emulator>,
     preferred_emulator: Option<String>,
+    css_path: Option<PathBuf>,
+    css_enabled: bool,
+    custom_style: Option<CustomStyle>,
+    css_error: Option<String>,
+    filters: Filters,
+    console_overrides: HashMap<String, String>,
+    console_emulators: HashMap<String, String>,
 }
 
 impl RustyShelfApp {
@@ -213,6 +239,29 @@ impl RustyShelfApp {
                 .flatten(),
         );
         apply_theme(&cc.egui_ctx, theme);
+        let css_path = store
+            .as_ref()
+            .and_then(|store| store.preference("css_path").ok())
+            .flatten()
+            .map(PathBuf::from);
+        let css_enabled = store
+            .as_ref()
+            .and_then(|store| store.preference("css_enabled").ok())
+            .flatten()
+            .as_deref()
+            == Some("true");
+        let (custom_style, css_error) = if css_enabled {
+            match css_path.as_deref().map(CustomStyle::load) {
+                Some(Ok(style)) => {
+                    style.apply(&cc.egui_ctx);
+                    (Some(style), None)
+                }
+                Some(Err(error)) => (None, Some(error)),
+                None => (None, None),
+            }
+        } else {
+            (None, None)
+        };
         let mut status = String::from("Hors ligne · Données locales");
         let games = store
             .as_ref()
@@ -247,6 +296,8 @@ impl RustyShelfApp {
             status = format!("Base locale indisponible : {error}");
         }
         let volumes = scan::mounted_volumes();
+        let console_overrides = load_mapping(store.as_ref(), "console_overrides");
+        let console_emulators = load_mapping(store.as_ref(), "console_emulators");
         let selected_volumes = vec![true; volumes.len()];
         Self {
             selected_category: "Tous les jeux".into(),
@@ -278,6 +329,73 @@ impl RustyShelfApp {
             theme,
             emulators,
             preferred_emulator,
+            css_path,
+            css_enabled,
+            custom_style,
+            css_error,
+            filters: Filters::default(),
+            console_overrides,
+            console_emulators,
+        }
+    }
+
+    fn active_style(&self) -> Option<&CustomStyle> {
+        self.custom_style.as_ref().filter(|_| self.css_enabled)
+    }
+
+    fn game_console<'a>(&'a self, game: &Game) -> Option<&'a str> {
+        self.console_overrides
+            .get(&game.id)
+            .map(String::as_str)
+            .or_else(|| crate::rom::game_console(game))
+    }
+
+    fn default_emulator(&self, game: &Game) -> Option<&String> {
+        self.game_console(game)
+            .and_then(|console| self.console_emulators.get(console))
+            .or(self.preferred_emulator.as_ref())
+    }
+
+    fn save_mapping(&mut self, key: &str, mapping: HashMap<String, String>) {
+        if let Some(store) = &self.store {
+            match serde_json::to_string(&mapping) {
+                Ok(json) => {
+                    if let Err(error) = store.set_preference(key, &json) {
+                        self.status = error.to_string();
+                    }
+                }
+                Err(error) => self.status = error.to_string(),
+            }
+        }
+    }
+
+    fn refresh_appearance(&self, ctx: &egui::Context) {
+        apply_theme(ctx, self.theme);
+        if let Some(style) = self.active_style() {
+            style.apply(ctx);
+        }
+    }
+
+    fn load_css(&mut self, ctx: &egui::Context) {
+        let Some(path) = self.css_path.as_deref() else {
+            return;
+        };
+        match CustomStyle::load(path) {
+            Ok(style) => {
+                self.custom_style = Some(style);
+                self.css_enabled = true;
+                self.css_error = None;
+                if let Some(store) = &self.store {
+                    if let Err(error) = store
+                        .set_preference("css_path", &path.to_string_lossy())
+                        .and_then(|_| store.set_preference("css_enabled", "true"))
+                    {
+                        self.css_error = Some(error.to_string());
+                    }
+                }
+                self.refresh_appearance(ctx);
+            }
+            Err(error) => self.css_error = Some(error),
         }
     }
 
@@ -443,6 +561,13 @@ impl RustyShelfApp {
     fn add_manual_game(&mut self) {
         let Some(executable) = rfd::FileDialog::new()
             .add_filter("Exécutable", &["exe", "sh", "x86_64"])
+            .add_filter(
+                "ROM / image disque",
+                &[
+                    "nes", "sfc", "smc", "gb", "gbc", "gba", "nds", "3ds", "n64", "z64", "iso",
+                    "chd", "cso", "wbfs", "rvz", "gcm", "cue", "pbp", "gen", "sms", "gg",
+                ],
+            )
             .pick_file()
         else {
             return;
@@ -451,7 +576,12 @@ impl RustyShelfApp {
             .file_stem()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Nouveau jeu".into());
-        let install_path = executable.parent().unwrap_or(&executable).to_path_buf();
+        let is_rom = crate::rom::console(&executable).is_some();
+        let install_path = if is_rom {
+            executable.clone()
+        } else {
+            executable.parent().unwrap_or(&executable).to_path_buf()
+        };
         let profile = LaunchProfile {
             command: executable,
             arguments: Vec::new(),
@@ -464,7 +594,7 @@ impl RustyShelfApp {
             Installation {
                 path: install_path,
                 launcher: Launcher::Manual,
-                launch_profile: Some(profile),
+                launch_profile: if is_rom { None } else { Some(profile) },
                 available: true,
             },
         );
@@ -512,188 +642,601 @@ impl RustyShelfApp {
     }
 
     fn sidebar(&mut self, ctx: &egui::Context) {
-        let pending = self.games.iter().filter(|game| !game.confirmed).count();
+        let accent = self
+            .active_style()
+            .and_then(|style| style.accent)
+            .unwrap_or(theme_accent(self.theme));
+        let muted = self
+            .active_style()
+            .and_then(|style| style.muted)
+            .unwrap_or(theme_muted_text(self.theme));
+        let mut consoles = std::collections::BTreeMap::<String, usize>::new();
+        for game in &self.games {
+            if let Some(console) = self.game_console(game) {
+                *consoles.entry(console.to_owned()).or_default() += 1;
+            }
+        }
+        let custom_categories: std::collections::BTreeSet<String> = self
+            .games
+            .iter()
+            .filter(|game| {
+                game.confirmed
+                    && ![
+                        "Steam",
+                        "Epic Games",
+                        "Heroic",
+                        "GOG",
+                        "Lutris",
+                        "Ajout manuel",
+                        "À confirmer",
+                    ]
+                    .contains(&game.category.as_str())
+                    && !game.category.starts_with("ROM")
+            })
+            .map(|game| game.category.clone())
+            .collect();
         egui::SidePanel::left("navigation")
-            .exact_width(220.0)
+            .exact_width(215.0)
             .show(ctx, |ui| {
-                ui.add_space(22.0);
+                ui.add_space(16.0);
                 ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("▣")
-                            .size(26.0)
-                            .color(Color32::from_rgb(135, 117, 255)),
-                    );
-                    ui.label(RichText::new("RUSTYSHELF").size(18.0).strong());
+                    ui.label(RichText::new("▦").size(30.0).color(accent));
+                    ui.label(RichText::new("RustyShelf").size(21.0).strong());
                 });
-                ui.add_space(25.0);
                 ui.label(
-                    RichText::new(tr(self.language, "BIBLIOTHÈQUE", "LIBRARY"))
-                        .size(11.0)
-                        .color(Color32::GRAY),
+                    RichText::new(tr(
+                        self.language,
+                        "Chaque jeu à sa place.",
+                        "Every game, in its place.",
+                    ))
+                    .size(11.0)
+                    .color(muted),
                 );
-                ui.add_space(8.0);
-                for (name, english, icon) in [
-                    ("Tous les jeux", "All games", "▦"),
-                    ("Favoris", "Favorites", "♡"),
-                    ("Installés", "Installed", "⬇"),
-                    ("À confirmer", "To review", "?"),
-                ] {
-                    if ui
-                        .selectable_label(
-                            self.selected_category == name,
-                            format!(
-                                "{icon}   {}{}",
-                                tr(self.language, name, english),
-                                if name == "À confirmer" {
-                                    format!(" ({pending})")
-                                } else {
-                                    String::new()
-                                }
-                            ),
-                        )
-                        .clicked()
-                    {
-                        self.selected_category = name.into();
-                    }
-                }
                 ui.add_space(18.0);
-                ui.label(
-                    RichText::new(tr(self.language, "SOURCES", "SOURCES"))
-                        .size(11.0)
-                        .color(Color32::GRAY),
-                );
-                ui.add_space(8.0);
-                for name in [
-                    "Steam",
-                    "Epic Games",
-                    "Heroic",
-                    "Lutris",
-                    "GOG",
-                    "Ajout manuel",
-                ] {
-                    if ui
-                        .selectable_label(
-                            self.selected_category == name,
-                            format!(
-                                "   ·   {}",
-                                if name == "Ajout manuel" {
-                                    tr(self.language, name, "Manual")
-                                } else {
-                                    name
-                                }
+                egui::ScrollArea::vertical()
+                    .id_salt("navigation-scroll")
+                    .max_height((ui.available_height() - 95.0).max(80.0))
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new(tr(self.language, "BIBLIOTHÈQUE", "LIBRARY"))
+                                .size(10.0)
+                                .color(muted),
+                        );
+                        for (key, english, icon, count) in [
+                            (
+                                "Tous les jeux",
+                                "All games",
+                                "▦",
+                                self.games.iter().filter(|game| game.confirmed).count(),
                             ),
-                        )
-                        .clicked()
-                    {
-                        self.selected_category = name.into();
-                    }
-                }
+                            (
+                                "Favoris",
+                                "Favorites",
+                                "★",
+                                self.games.iter().filter(|game| game.favorite).count(),
+                            ),
+                            (
+                                "Installés",
+                                "Available",
+                                "●",
+                                self.games
+                                    .iter()
+                                    .filter(|game| {
+                                        game.confirmed
+                                            && game
+                                                .installations
+                                                .iter()
+                                                .any(|installation| installation.available)
+                                    })
+                                    .count(),
+                            ),
+                            (
+                                "À confirmer",
+                                "To review",
+                                "?",
+                                self.games.iter().filter(|game| !game.confirmed).count(),
+                            ),
+                        ] {
+                            if ui
+                                .selectable_label(
+                                    self.selected_category == key,
+                                    format!("{icon}  {}  {count}", tr(self.language, key, english)),
+                                )
+                                .clicked()
+                            {
+                                self.selected_category = key.into();
+                            }
+                        }
+                        ui.add_space(14.0);
+                        ui.label(RichText::new("ROMS & CONSOLES").size(10.0).color(muted));
+                        if ui
+                            .selectable_label(
+                                self.selected_category == "ROMs",
+                                format!("▣  ROMs  {}", consoles.values().sum::<usize>()),
+                            )
+                            .clicked()
+                        {
+                            self.selected_category = "ROMs".into();
+                        }
+                        for (console, count) in consoles {
+                            let key = format!("console:{console}");
+                            if ui
+                                .selectable_label(
+                                    self.selected_category == key,
+                                    format!("    {console}  {count}"),
+                                )
+                                .clicked()
+                            {
+                                self.selected_category = key;
+                            }
+                        }
+                        ui.add_space(14.0);
+                        ui.label(RichText::new("SOURCES").size(10.0).color(muted));
+                        for name in [
+                            "Steam",
+                            "Epic Games",
+                            "Heroic",
+                            "Lutris",
+                            "GOG",
+                            "Ajout manuel",
+                        ] {
+                            let label = if name == "Ajout manuel" {
+                                tr(self.language, name, "Manual")
+                            } else {
+                                name
+                            };
+                            if ui
+                                .selectable_label(
+                                    self.selected_category == name,
+                                    format!("·  {label}"),
+                                )
+                                .clicked()
+                            {
+                                self.selected_category = name.into();
+                            }
+                        }
+                        if !custom_categories.is_empty() {
+                            ui.add_space(14.0);
+                            ui.label(
+                                RichText::new(tr(self.language, "MES CATÉGORIES", "MY CATEGORIES"))
+                                    .size(10.0)
+                                    .color(muted),
+                            );
+                            for category in custom_categories {
+                                if ui
+                                    .selectable_label(self.selected_category == category, &category)
+                                    .clicked()
+                                {
+                                    self.selected_category = category;
+                                }
+                            }
+                        }
+                    });
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                    ui.label(RichText::new(&self.status).size(10.0).color(muted));
                     if ui
-                        .button(format!(
-                            "⚙  {}",
-                            tr(self.language, "Paramètres", "Settings")
+                        .button(tr(
+                            self.language,
+                            "⚙ Options et apparence",
+                            "⚙ Settings and appearance",
                         ))
                         .clicked()
                     {
                         self.show_options = true;
                     }
-                    ui.label(RichText::new(&self.status).size(10.0).color(Color32::GRAY));
                 });
             });
     }
-
     fn content(&mut self, ctx: &egui::Context) {
-        let category_title = if self.language == Language::English {
-            match self.selected_category.as_str() {
-                "Tous les jeux" => "All games",
-                "Favoris" => "Favorites",
-                "Installés" => "Installed",
-                "À confirmer" => "To review",
-                "Ajout manuel" => "Manual",
-                other => other,
+        let accent = self
+            .active_style()
+            .and_then(|style| style.accent)
+            .unwrap_or(theme_accent(self.theme));
+        let card = self
+            .active_style()
+            .and_then(|style| style.card)
+            .unwrap_or(card_color(self.theme));
+        let text = self
+            .active_style()
+            .and_then(|style| style.text)
+            .unwrap_or(theme_text(self.theme));
+        let muted = self
+            .active_style()
+            .and_then(|style| style.muted)
+            .unwrap_or(theme_muted_text(self.theme));
+        let radius = self
+            .active_style()
+            .and_then(|style| style.radius)
+            .unwrap_or(if self.theme == Theme::Classic { 0 } else { 12 });
+        let gap = self
+            .active_style()
+            .and_then(|style| style.gap)
+            .unwrap_or(12.0);
+        let mut filtered: Vec<Game> = self
+            .games
+            .iter()
+            .filter(|game| {
+                self.matches_category(game)
+                    && self
+                        .filters
+                        .matches(game, &self.search, self.game_console(game))
+            })
+            .cloned()
+            .collect();
+        filtered.sort_by(|left, right| {
+            let name = left.title.to_lowercase().cmp(&right.title.to_lowercase());
+            match self.filters.sort {
+                Sort::Name => name,
+                Sort::ReverseName => name.reverse(),
+                Sort::Favorites => right.favorite.cmp(&left.favorite).then(name),
             }
-            .to_string()
-        } else {
-            self.selected_category.clone()
-        };
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(&category_title).size(25.0).strong());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let button = if self.scan_control.is_some() { tr(self.language, "■  Arrêter le scan", "■  Stop scan") } else { tr(self.language, "⌕  Scanner les disques", "⌕  Scan drives") };
-                    if ui.button(button).clicked() { if self.scan_control.is_some() { if let Some(control) = &self.scan_control { control.cancel(); } } else { self.show_options = true; } }
-                    if ui.button(format!("＋ {}", tr(self.language, "Jeu", "Game"))).clicked() { self.add_manual_game(); }
-                    ui.add_sized([220.0, 30.0], egui::TextEdit::singleline(&mut self.search).hint_text(tr(self.language, "Rechercher un jeu…", "Search games…")));
+        });
+        if !filtered
+            .iter()
+            .any(|game| self.selected_game.as_ref() == Some(&game.id))
+        {
+            self.selected_game = filtered.first().map(|game| game.id.clone());
+        }
+        if !filtered.is_empty() {
+            egui::SidePanel::right("game_details")
+                .default_width(290.0)
+                .width_range(250.0..=390.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(
+                            self.active_style()
+                                .and_then(|style| style.surface)
+                                .unwrap_or(card),
+                        )
+                        .inner_margin(18.0),
+                )
+                .show(ctx, |ui| {
+                    ui.label(
+                        RichText::new(tr(self.language, "FICHE DU JEU", "GAME DETAILS"))
+                            .size(10.0)
+                            .color(muted),
+                    );
+                    ui.add_space(14.0);
+                    egui::ScrollArea::vertical()
+                        .id_salt("details-scroll")
+                        .show(ui, |ui| self.details_panel(ui, &filtered));
                 });
-            });
+        }
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.add_space(8.0);
+            let title = match self.selected_category.as_str() {
+                "Tous les jeux" => tr(self.language, "Ma collection", "My collection"),
+                "Favoris" => tr(self.language, "Favoris", "Favorites"),
+                "Installés" => tr(self.language, "Jeux disponibles", "Available games"),
+                "À confirmer" => tr(self.language, "À confirmer", "To review"),
+                other => other.strip_prefix("console:").unwrap_or(other),
+            };
+            ui.label(RichText::new(title).size(28.0).strong().color(text));
+            ui.label(
+                RichText::new(format!(
+                    "{} {} · {}",
+                    filtered.len(),
+                    tr(self.language, "résultat(s)", "result(s)"),
+                    tr(
+                        self.language,
+                        "Votre collection, sur votre ordinateur.",
+                        "Your collection, on your computer."
+                    )
+                ))
+                .size(12.0)
+                .color(muted),
+            );
             ui.add_space(12.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.search)
+                        .desired_width(210.0)
+                        .hint_text(tr(
+                            self.language,
+                            "Rechercher un jeu ou une console…",
+                            "Search a game or console…",
+                        )),
+                );
+                if ui
+                    .button(tr(self.language, "＋ Ajouter", "＋ Add"))
+                    .clicked()
+                {
+                    self.add_manual_game();
+                }
+                let scan_label = if self.scan_control.is_some() {
+                    tr(self.language, "■ Arrêter", "■ Stop")
+                } else {
+                    tr(self.language, "Scanner", "Scan")
+                };
+                if ui.button(scan_label).clicked() {
+                    if let Some(control) = &self.scan_control {
+                        control.cancel();
+                    } else {
+                        self.show_options = true;
+                    }
+                }
+            });
+            self.filter_bar(ui);
+            ui.add_space(8.0);
             if self.scan_control.is_some() {
-                ui.horizontal(|ui| { ui.spinner(); ui.label(format!("{} {} · {}", self.scan_visited, tr(self.language, "éléments parcourus", "items scanned"), self.scan_current)); });
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(format!(
+                        "{} {}",
+                        self.scan_visited,
+                        tr(self.language, "éléments parcourus", "items scanned")
+                    ));
+                });
             }
             ui.separator();
-            let mut filtered: Vec<Game> = self.games.iter().filter(|game| self.matches_category(game) && game.title.to_lowercase().contains(&self.search.to_lowercase())).cloned().collect();
-            filtered.sort_by_key(|game| game.title.to_lowercase());
             if filtered.is_empty() {
                 ui.vertical_centered(|ui| {
-                    ui.add_space(95.0);
-                    ui.label(RichText::new("▧").size(40.0).color(Color32::from_rgb(118, 105, 209)));
-                    ui.label(RichText::new(tr(self.language, "Votre collection commence ici", "Your library starts here")).size(20.0).strong());
-                    ui.label(tr(self.language, "Scannez les disques pour retrouver vos jeux, ou ajoutez-en un manuellement.", "Scan your drives to find games, or add one manually."));
-                    ui.add_space(10.0);
-                    if ui.button(tr(self.language, "⌕   Scanner mes disques", "⌕   Scan my drives")).clicked() { self.show_options = true; }
-                    if ui.button(tr(self.language, "＋   Ajouter un jeu", "＋   Add a game")).clicked() { self.add_manual_game(); }
-                    let pending = self.games.iter().filter(|game| !game.confirmed).count();
-                    if pending > 0 && ui.button(format!("{} ({pending})", tr(self.language, "Examiner les candidats", "Review candidates"))).clicked() {
+                    ui.add_space(55.0);
+                    ui.label(RichText::new("▦").size(42.0).color(accent));
+                    ui.label(
+                        RichText::new(tr(
+                            self.language,
+                            "Une place pour chaque aventure",
+                            "A place for every adventure",
+                        ))
+                        .size(20.0)
+                        .color(text),
+                    );
+                    ui.label(tr(
+                        self.language,
+                        "Aucun jeu dans cette vue. Ajuste les filtres ou ajoute un jeu.",
+                        "No games in this view. Adjust filters or add a game.",
+                    ));
+                    if ui
+                        .button(tr(
+                            self.language,
+                            "Réinitialiser les filtres",
+                            "Reset filters",
+                        ))
+                        .clicked()
+                    {
+                        self.filters = Filters::default();
+                        self.search.clear();
+                    }
+                    if self.games.iter().any(|game| !game.confirmed)
+                        && ui
+                            .button(tr(
+                                self.language,
+                                "Examiner les candidats",
+                                "Review candidates",
+                            ))
+                            .clicked()
+                    {
                         self.selected_category = "À confirmer".into();
-                        self.selected_game = self.games.iter().find(|game| !game.confirmed).map(|game| game.id.clone());
                     }
                 });
                 return;
             }
-            ui.columns(2, |columns| {
-                let (list, details) = columns.split_at_mut(1);
-                egui::ScrollArea::vertical().show(&mut list[0], |ui| {
-                    let card_columns = ((ui.available_width() + 12.0) / 190.0).floor().max(1.0) as usize;
-                    egui::Grid::new("game_cards")
-                        .num_columns(card_columns)
-                        .spacing([12.0, 12.0])
-                        .show(ui, |ui| {
-                        for (index, game) in filtered.iter().enumerate() {
-                            let (rect, response) = ui.allocate_exact_size(Vec2::new(178.0, 158.0), egui::Sense::click());
-                            let selected = self.selected_game.as_deref() == Some(&game.id);
-                            let visible = ui.is_rect_visible(rect);
-                            let base = card_color(self.theme);
-                            let fill = if selected || response.hovered() { theme_accent(self.theme) } else { base };
-                            let painter = ui.painter();
-                            let radius = if self.theme == Theme::Classic { 0.0 } else { 10.0 };
-                            painter.rect_filled(rect, radius, fill);
-                            let cover_rect = egui::Rect::from_min_size(rect.min + Vec2::new(8.0, 8.0), Vec2::new(162.0, 96.0));
-                            if let Some(texture) = visible.then(|| self.load_cover(ctx, game)).flatten() {
-                                painter.image(texture.id(), cover_rect, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), Color32::WHITE);
-                            } else {
-                                painter.rect_filled(cover_rect, 7.0, placeholder_color(self.theme));
-                                let initials: String = game.title.chars().take(2).collect::<String>().to_uppercase();
-                                painter.text(cover_rect.center(), egui::Align2::CENTER_CENTER, initials, egui::FontId::proportional(25.0), theme_text(self.theme));
-                            }
-                            let star = if game.favorite { "★ " } else { "" };
-                            let title = truncate_title(&game.title, 20);
-                            let dark_accent = (selected || response.hovered()) && matches!(self.theme, Theme::Horizon | Theme::Classic);
-                            painter.text(rect.left_top() + Vec2::new(10.0, 112.0), egui::Align2::LEFT_TOP, format!("{star}{title}"), egui::FontId::proportional(14.0), if dark_accent { Color32::WHITE } else { theme_text(self.theme) });
-                            let category = if game.confirmed { game.category.as_str() } else { tr(self.language, "À confirmer", "To review") };
-                            painter.text(rect.left_top() + Vec2::new(10.0, 136.0), egui::Align2::LEFT_TOP, category, egui::FontId::proportional(11.0), if dark_accent { Color32::WHITE } else { theme_muted_text(self.theme) });
-                            if response.clicked() { self.selected_game = Some(game.id.clone()); }
-                            if (index + 1) % card_columns == 0 { ui.end_row(); }
+            ui.scope(|ui| {
+                let columns = ((ui.available_width() + gap) / (190.0 + gap))
+                    .floor()
+                    .max(1.0) as usize;
+                let width = ((ui.available_width() - gap * (columns.saturating_sub(1)) as f32)
+                    / columns as f32)
+                    .clamp(150.0, 250.0);
+                let card_height = 196.0;
+                let rows = filtered.len().div_ceil(columns);
+                egui::ScrollArea::vertical()
+                    .id_salt("virtual-cards")
+                    .show_rows(ui, card_height, rows, |ui, range| {
+                        for row in range {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = gap;
+                                for game in filtered.iter().skip(row * columns).take(columns) {
+                                    let (rect, response) = ui.allocate_exact_size(
+                                        Vec2::new(width, card_height),
+                                        egui::Sense::click(),
+                                    );
+                                    if !ui.is_rect_visible(rect) {
+                                        continue;
+                                    }
+                                    let selected = self.selected_game.as_deref() == Some(&game.id);
+                                    let texture = self.load_cover(ctx, game);
+                                    let painter = ui.painter();
+                                    painter.rect_filled(rect, radius, card);
+                                    if selected || response.hovered() {
+                                        painter.rect_stroke(
+                                            rect,
+                                            radius,
+                                            egui::Stroke::new(
+                                                if selected { 2.0_f32 } else { 1.0_f32 },
+                                                accent,
+                                            ),
+                                            egui::StrokeKind::Inside,
+                                        );
+                                    }
+                                    let cover = egui::Rect::from_min_size(
+                                        rect.min + Vec2::splat(8.0),
+                                        Vec2::new(width - 16.0, 112.0),
+                                    );
+                                    if let Some(texture) = texture {
+                                        painter.image(
+                                            texture.id(),
+                                            cover,
+                                            egui::Rect::from_min_max(
+                                                egui::Pos2::ZERO,
+                                                egui::pos2(1.0, 1.0),
+                                            ),
+                                            Color32::WHITE,
+                                        );
+                                    } else {
+                                        painter.rect_filled(
+                                            cover,
+                                            radius.min(8),
+                                            placeholder_color(self.theme),
+                                        );
+                                        let initials = game
+                                            .title
+                                            .chars()
+                                            .take(2)
+                                            .collect::<String>()
+                                            .to_uppercase();
+                                        painter.text(
+                                            cover.center(),
+                                            egui::Align2::CENTER_CENTER,
+                                            initials,
+                                            egui::FontId::proportional(32.0),
+                                            accent,
+                                        );
+                                    }
+                                    let title = truncate_title(&game.title, (width / 7.5) as usize);
+                                    painter.text(
+                                        rect.min + Vec2::new(12.0, 132.0),
+                                        egui::Align2::LEFT_TOP,
+                                        title,
+                                        egui::FontId::proportional(15.0),
+                                        text,
+                                    );
+                                    let category =
+                                        self.game_console(game).unwrap_or(if game.confirmed {
+                                            &game.category
+                                        } else {
+                                            tr(self.language, "À confirmer", "To review")
+                                        });
+                                    painter.text(
+                                        rect.min + Vec2::new(12.0, 158.0),
+                                        egui::Align2::LEFT_TOP,
+                                        truncate_title(category, (width / 7.0) as usize),
+                                        egui::FontId::proportional(11.0),
+                                        muted,
+                                    );
+                                    if game.favorite {
+                                        painter.text(
+                                            rect.right_top() + Vec2::new(-14.0, 14.0),
+                                            egui::Align2::RIGHT_TOP,
+                                            "★",
+                                            egui::FontId::proportional(18.0),
+                                            accent,
+                                        );
+                                    }
+                                    let available = game
+                                        .installations
+                                        .iter()
+                                        .any(|installation| installation.available);
+                                    painter.circle_filled(
+                                        rect.left_bottom() + Vec2::new(14.0, -12.0),
+                                        3.0,
+                                        if available {
+                                            Color32::from_rgb(113, 186, 142)
+                                        } else {
+                                            muted
+                                        },
+                                    );
+                                    response.clone().on_hover_text(&game.title);
+                                    if response.clicked() {
+                                        self.selected_game = Some(game.id.clone());
+                                    }
+                                }
+                            });
                         }
                     });
-                });
-                egui::Frame::new().fill(card_color(self.theme)).corner_radius(10.0).inner_margin(16.0).show(&mut details[0], |ui| self.details_panel(ui, &filtered));
             });
         });
     }
 
+    fn filter_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            egui::ComboBox::from_id_salt("filter-kind")
+                .width(95.0)
+                .selected_text(match self.filters.kind {
+                    GameKind::All => tr(self.language, "PC + ROMs", "PC + ROMs"),
+                    GameKind::Pc => "PC",
+                    GameKind::Rom => "ROMs",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.filters.kind, GameKind::All, "PC + ROMs");
+                    ui.selectable_value(&mut self.filters.kind, GameKind::Pc, "PC");
+                    ui.selectable_value(&mut self.filters.kind, GameKind::Rom, "ROMs");
+                });
+            egui::ComboBox::from_id_salt("filter-source")
+                .width(100.0)
+                .selected_text(
+                    self.filters
+                        .source
+                        .as_ref()
+                        .map(|source| launcher_label(source, self.language))
+                        .unwrap_or(tr(self.language, "Toutes sources", "All sources")),
+                )
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.filters.source,
+                        None,
+                        tr(self.language, "Toutes sources", "All sources"),
+                    );
+                    for source in [
+                        Launcher::Steam,
+                        Launcher::Epic,
+                        Launcher::Heroic,
+                        Launcher::Lutris,
+                        Launcher::Gog,
+                        Launcher::Manual,
+                        Launcher::Unknown,
+                    ] {
+                        let label = launcher_label(&source, self.language);
+                        ui.selectable_value(&mut self.filters.source, Some(source), label);
+                    }
+                });
+            egui::ComboBox::from_id_salt("filter-available")
+                .width(105.0)
+                .selected_text(match self.filters.available {
+                    None => tr(self.language, "Tous les états", "All states"),
+                    Some(true) => tr(self.language, "Disponibles", "Available"),
+                    Some(false) => tr(self.language, "Indisponibles", "Unavailable"),
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.filters.available,
+                        None,
+                        tr(self.language, "Tous les états", "All states"),
+                    );
+                    ui.selectable_value(
+                        &mut self.filters.available,
+                        Some(true),
+                        tr(self.language, "Disponibles", "Available"),
+                    );
+                    ui.selectable_value(
+                        &mut self.filters.available,
+                        Some(false),
+                        tr(self.language, "Indisponibles", "Unavailable"),
+                    );
+                });
+            egui::ComboBox::from_id_salt("filter-sort")
+                .width(85.0)
+                .selected_text(match self.filters.sort {
+                    Sort::Name => "A → Z",
+                    Sort::ReverseName => "Z → A",
+                    Sort::Favorites => "★",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.filters.sort, Sort::Name, "A → Z");
+                    ui.selectable_value(&mut self.filters.sort, Sort::ReverseName, "Z → A");
+                    ui.selectable_value(
+                        &mut self.filters.sort,
+                        Sort::Favorites,
+                        tr(self.language, "Favoris d’abord", "Favorites first"),
+                    );
+                });
+            ui.checkbox(&mut self.filters.favorites_only, "★");
+            if ui
+                .small_button(tr(self.language, "Effacer", "Clear"))
+                .clicked()
+            {
+                self.filters = Filters::default();
+                self.search.clear();
+            }
+        });
+    }
     fn matches_category(&self, game: &Game) -> bool {
+        if let Some(console) = self.selected_category.strip_prefix("console:") {
+            return self.game_console(game) == Some(console);
+        }
         match self.selected_category.as_str() {
+            "ROMs" => self.game_console(game).is_some(),
             "Tous les jeux" => game.confirmed,
             "Favoris" => game.favorite,
             "Installés" => {
@@ -840,19 +1383,41 @@ impl RustyShelfApp {
         let mut launch_profile: Option<LaunchProfile> = None;
         let mut launch_uri: Option<String> = None;
         let mut launch_image: Option<(PathBuf, PathBuf)> = None;
-        let is_disc_game = game
-            .installations
-            .iter()
-            .any(|installation| crate::emulator::is_disc_image(&installation.path));
+        let is_disc_game = self.game_console(&game).is_some();
         if is_disc_game {
+            let current_console = self.console_overrides.get(&game.id).cloned();
+            let mut chosen_console = current_console.clone();
+            egui::ComboBox::from_id_salt(("rom-console", &game.id))
+                .selected_text(self.game_console(&game).unwrap_or("Console à préciser"))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut chosen_console,
+                        None,
+                        tr(self.language, "Détection automatique", "Auto detect"),
+                    );
+                    for console in crate::rom::CONSOLES {
+                        ui.selectable_value(
+                            &mut chosen_console,
+                            Some((*console).to_owned()),
+                            *console,
+                        );
+                    }
+                });
+            if chosen_console != current_console {
+                if let Some(console) = chosen_console {
+                    self.console_overrides.insert(game.id.clone(), console);
+                } else {
+                    self.console_overrides.remove(&game.id);
+                }
+                self.save_mapping("console_overrides", self.console_overrides.clone());
+            }
             let current_override = self
                 .store
                 .as_ref()
                 .and_then(|store| store.game_emulator(&game.id).ok())
                 .flatten();
             let default_name = self
-                .preferred_emulator
-                .as_ref()
+                .default_emulator(&game)
                 .and_then(|id| self.emulators.iter().find(|emulator| &emulator.id == id))
                 .map(|emulator| emulator.name.as_str())
                 .unwrap_or(tr(
@@ -906,7 +1471,7 @@ impl RustyShelfApp {
             } else {
                 tr(self.language, "Disque indisponible", "Drive unavailable")
             });
-            if crate::emulator::is_disc_image(&installation.path) && installation.available {
+            if crate::rom::console(&installation.path).is_some() && installation.available {
                 if ui
                     .button(tr(
                         self.language,
@@ -920,7 +1485,7 @@ impl RustyShelfApp {
                         .as_ref()
                         .and_then(|store| store.game_emulator(&game.id).ok())
                         .flatten()
-                        .or_else(|| self.preferred_emulator.clone());
+                        .or_else(|| self.default_emulator(&game).cloned());
                     if let Some(emulator) = emulator_id
                         .and_then(|id| self.emulators.iter().find(|emulator| emulator.id == id))
                     {
@@ -1004,6 +1569,8 @@ impl RustyShelfApp {
         egui::Window::new(tr(self.language, "Options", "Settings"))
             .collapsible(false)
             .resizable(true)
+            .default_width(610.0)
+            .vscroll(true)
             .show(ctx, |ui| {
                 ui.heading(tr(self.language, "Apparence et langue", "Appearance and language"));
                 let previous_language = self.language;
@@ -1032,9 +1599,37 @@ impl RustyShelfApp {
                         }
                     });
                 if previous_theme != self.theme {
-                    apply_theme(ctx, self.theme);
+                    self.refresh_appearance(ctx);
                     if let Some(store) = &self.store { let _ = store.set_preference("theme", self.theme.key()); }
                 }
+                ui.separator();
+                ui.heading(tr(self.language, "Style CSS personnalisé", "Custom CSS style"));
+                ui.label(tr(self.language, "Variables de couleurs, arrondis et espacement. Fichier local, rechargement manuel.", "Color, radius and spacing variables. Local file, manual reload."));
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(tr(self.language, "Importer un fichier CSS…", "Import CSS file…")).clicked() {
+                        if let Some(path) = rfd::FileDialog::new().add_filter("CSS", &["css"]).pick_file() {
+                            self.css_path = Some(path);
+                            self.load_css(ctx);
+                        }
+                    }
+                    if ui.add_enabled(self.css_path.is_some(), egui::Button::new(tr(self.language, "Recharger", "Reload"))).clicked() { self.load_css(ctx); }
+                    if ui.button(tr(self.language, "Enregistrer le modèle…", "Save template…")).clicked() {
+                        if let Some(path) = rfd::FileDialog::new().set_file_name("rustyshelf.css").add_filter("CSS", &["css"]).save_file() {
+                            match std::fs::write(&path, crate::style::EXAMPLE) {
+                                Ok(()) => { self.css_path = Some(path); self.load_css(ctx); }
+                                Err(error) => self.css_error = Some(error.to_string()),
+                            }
+                        }
+                    }
+                });
+                if ui.checkbox(&mut self.css_enabled, tr(self.language, "Activer le style CSS", "Enable CSS style")).changed() {
+                    if self.css_enabled && self.custom_style.is_none() { self.load_css(ctx); }
+                    self.refresh_appearance(ctx);
+                    if let Some(store) = &self.store { let _ = store.set_preference("css_enabled", if self.css_enabled { "true" } else { "false" }); }
+                }
+                if let Some(path) = &self.css_path { ui.label(path.display().to_string()); }
+                if let Some(error) = &self.css_error { ui.colored_label(Color32::from_rgb(225, 92, 85), error); }
+                ui.small(tr(self.language, "Syntaxe : :root { --accent: #e5a270; --radius: 12px; } · CSS complet non pris en charge.", "Syntax: :root { --accent: #e5a270; --radius: 12px; } · Full CSS is not supported."));
                 ui.separator();
                 ui.heading(tr(self.language, "Émulation", "Emulation"));
                 let previous_emulator = self.preferred_emulator.clone();
@@ -1048,6 +1643,19 @@ impl RustyShelfApp {
                     if let Some(store) = &self.store { let _ = store.set_preference("preferred_emulator", self.preferred_emulator.as_deref().unwrap_or("")); }
                 }
                 if ui.button(tr(self.language, "＋ Ajouter un émulateur…", "＋ Add emulator…")).clicked() { self.add_emulator(); }
+                let consoles: std::collections::BTreeSet<String> = self.games.iter().filter_map(|game| self.game_console(game).map(str::to_owned)).collect();
+                let previous_console_emulators = self.console_emulators.clone();
+                for console in consoles {
+                    let mut chosen = self.console_emulators.get(&console).cloned();
+                    egui::ComboBox::from_id_salt(("console-emulator", &console))
+                        .selected_text(format!("{} : {}", console, chosen.as_ref().and_then(|id| self.emulators.iter().find(|emulator| &emulator.id == id)).map(|emulator| emulator.name.as_str()).unwrap_or(tr(self.language, "Défaut général", "Global default"))))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut chosen, None, tr(self.language, "Défaut général", "Global default"));
+                            for emulator in &self.emulators { ui.selectable_value(&mut chosen, Some(emulator.id.clone()), &emulator.name); }
+                        });
+                    if let Some(id) = chosen { self.console_emulators.insert(console, id); } else { self.console_emulators.remove(&console); }
+                }
+                if previous_console_emulators != self.console_emulators { self.save_mapping("console_emulators", self.console_emulators.clone()); }
                 if self.emulators.is_empty() {
                     ui.label(tr(self.language, "Aucun émulateur détecté. Ajoute son exécutable ci-dessus.", "No emulator found. Add its executable above."));
                 } else {
@@ -1055,6 +1663,11 @@ impl RustyShelfApp {
                 }
                 ui.separator();
                 ui.heading(tr(self.language, "Scanner", "Scanner"));
+                if ui.add_enabled(self.scan_control.is_none(), egui::Button::new(tr(self.language, "Actualiser les disques", "Refresh drives"))).clicked() {
+                    let selected: Vec<PathBuf> = self.volumes.iter().zip(&self.selected_volumes).filter(|(_, selected)| **selected).map(|(volume, _)| volume.root.clone()).collect();
+                    self.volumes = scan::mounted_volumes();
+                    self.selected_volumes = self.volumes.iter().map(|volume| selected.contains(&volume.root)).collect();
+                }
                 if ui.button(tr(self.language, "Réafficher les candidats ignorés", "Restore ignored candidates")).clicked() {
                     if let Some(store) = &self.store {
                         match store.restore_ignored_games().and_then(|_| store.games()) {
@@ -1199,7 +1812,7 @@ fn emulator_process(executable: &std::path::Path, image: &std::path::Path) -> Co
 
 fn card_color(theme: Theme) -> Color32 {
     match theme {
-        Theme::Dark => Color32::from_rgb(24, 27, 36),
+        Theme::Dark => Color32::from_rgb(37, 45, 57),
         Theme::Light => Color32::from_rgb(249, 250, 253),
         Theme::Breeze => Color32::from_rgb(229, 241, 251),
         Theme::Horizon => Color32::from_rgb(233, 241, 253),
@@ -1210,7 +1823,7 @@ fn card_color(theme: Theme) -> Color32 {
 
 fn theme_accent(theme: Theme) -> Color32 {
     match theme {
-        Theme::Dark => Color32::from_rgb(57, 50, 86),
+        Theme::Dark => Color32::from_rgb(229, 162, 112),
         Theme::Light => Color32::from_rgb(226, 221, 249),
         Theme::Breeze => Color32::from_rgb(190, 220, 244),
         Theme::Horizon => Color32::from_rgb(49, 106, 197),
@@ -1271,7 +1884,8 @@ fn truncate_title(title: &str, max_chars: usize) -> String {
 fn merge_game_in_memory(games: &mut Vec<Game>, incoming: Game) {
     let target = games.iter_mut().find(|current| {
         current.id == incoming.id
-            || normalized_title(&current.title) == normalized_title(&incoming.title)
+            || (normalized_title(&current.title) == normalized_title(&incoming.title)
+                && crate::rom::game_console(current) == crate::rom::game_console(&incoming))
             || current.installations.iter().any(|existing| {
                 incoming
                     .installations
@@ -1380,6 +1994,77 @@ impl eframe::App for RustyShelfApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn library_and_options_render_at_compact_and_wide_sizes() {
+        let ctx = egui::Context::default();
+        let games = (0..40)
+            .map(|index| {
+                Game::from_installation(
+                    format!("Adventure {index}"),
+                    "ROM · NES",
+                    Installation {
+                        path: PathBuf::from(format!("/roms/adventure-{index}.nes")),
+                        launcher: Launcher::Manual,
+                        launch_profile: None,
+                        available: true,
+                    },
+                )
+            })
+            .collect();
+        let mut app = RustyShelfApp {
+            selected_category: "ROMs".into(),
+            search: String::new(),
+            show_options: false,
+            games,
+            selected_game: None,
+            store: None,
+            status: "Hors ligne".into(),
+            volumes: vec![],
+            selected_volumes: vec![],
+            exclusions: vec![],
+            scan_control: None,
+            scan_receiver: None,
+            scan_visited: 0,
+            scan_current: String::new(),
+            scan_roots: vec![],
+            scan_exclusions: vec![],
+            scan_seen_paths: vec![],
+            errors: vec![],
+            cover_textures: HashMap::new(),
+            category_edit: String::new(),
+            category_edit_id: None,
+            language: Language::French,
+            theme: Theme::Dark,
+            emulators: vec![],
+            preferred_emulator: None,
+            css_path: None,
+            css_enabled: true,
+            custom_style: Some(CustomStyle::parse(crate::style::EXAMPLE).unwrap()),
+            css_error: None,
+            filters: Filters::default(),
+            console_overrides: HashMap::new(),
+            console_emulators: HashMap::new(),
+        };
+        app.refresh_appearance(&ctx);
+        for width in [780.0, 1280.0] {
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 760.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.sidebar(ctx);
+                    app.content(ctx);
+                    app.options_window(ctx);
+                },
+            );
+            assert!(!output.shapes.is_empty());
+        }
+    }
 
     #[test]
     fn missing_emulator_returns_a_launch_error() {
