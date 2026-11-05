@@ -54,7 +54,7 @@ pub fn discover_installed() -> Vec<Emulator> {
             ("PPSSPP", &["ppsspp-qt", "PPSSPPQt", "ppsspp"][..]),
         ];
         for (name, binaries) in candidates {
-            if let Some(executable) = binaries.iter().find_map(find_on_path) {
+            if let Some(executable) = binaries.iter().find_map(|binary| find_on_path(binary)) {
                 result.push(Emulator::new(name, executable));
             }
         }

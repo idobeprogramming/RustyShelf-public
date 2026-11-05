@@ -15,6 +15,6 @@ pub fn discover(roots: &[PathBuf]) -> Vec<Game> {
     games.extend(lutris::discover());
     games.extend(gog::discover());
     games.sort_by_key(|game| game.title.to_lowercase());
-    games.dedup_by(|a, b| a.id == b.id);
+    // The store merges titles while preserving every installation and launcher profile.
     games
 }

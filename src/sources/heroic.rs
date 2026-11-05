@@ -35,86 +35,133 @@ pub fn discover() -> Vec<Game> {
             let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
                 continue;
             };
-            let title = find_string(&json, &["title", "app_title", "displayName", "name"]);
-            let location = find_string(&json, &["install_path", "installPath", "path"]);
-            let (Some(title), Some(location)) = (title, location) else {
-                continue;
-            };
-            let install = PathBuf::from(location);
-            if !install.is_dir() {
-                continue;
-            }
-            let launcher = if entry
+            let gog = entry
                 .path()
                 .to_string_lossy()
                 .to_lowercase()
-                .contains("gog")
-            {
-                Launcher::Gog
-            } else {
-                Launcher::Heroic
-            };
-            let executable = find_string(&json, &["executable", "launchExecutable", "exe"]);
-            let app_name = find_string(&json, &["app_name", "appName", "app_id", "appId"]);
-            let runner = if launcher == Launcher::Gog {
-                "gog"
-            } else {
-                "legendary"
-            };
-            let launch_uri = app_name.map(|id| {
-                format!(
-                    "heroic://launch?appName={}&runner={runner}",
-                    id.replace(' ', "%20")
-                )
-            });
-            let profile = executable.map(|exe| {
-                let command = PathBuf::from(exe);
-                let command = if command.is_absolute() {
-                    command
-                } else {
-                    install.join(command)
-                };
-                LaunchProfile {
-                    command,
-                    arguments: Vec::new(),
-                    working_directory: Some(install.clone()),
-                    launcher_command: launch_uri,
-                }
-            });
-            result.push(Game::from_installation(
-                title,
-                launcher.label(),
-                Installation {
-                    path: install,
-                    launcher,
-                    launch_profile: profile,
-                    available: true,
-                },
-            ));
+                .contains("gog");
+            collect_games(&json, gog, None, &mut result);
         }
     }
     result
 }
 
-fn find_string<'a>(value: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+// A title and installation path must belong to the same record. Searching each
+// field recursively can combine the title of one game with another game's path.
+fn collect_games(
+    value: &serde_json::Value,
+    gog: bool,
+    record_id: Option<&str>,
+    result: &mut Vec<Game>,
+) {
+    let title = field(value, &["title", "app_title", "displayName", "name"]);
+    let location = field(value, &["install_path", "installPath", "path"]);
+    if let (Some(title), Some(location)) = (title, location) {
+        let install = PathBuf::from(location);
+        if !install.is_dir() {
+            return;
+        }
+        let launcher = if gog { Launcher::Gog } else { Launcher::Heroic };
+        let app_name = field(value, &["app_name", "appName", "app_id", "appId"]).or(record_id);
+        let runner = if gog { "gog" } else { "legendary" };
+        let launch_uri = app_name.map(|id| {
+            format!(
+                "heroic://launch?appName={}&runner={runner}",
+                uri_component(id)
+            )
+        });
+        let executable = field(value, &["executable", "launchExecutable", "exe"]);
+        let profile = if executable.is_some() || launch_uri.is_some() {
+            let command = executable.map(PathBuf::from).unwrap_or_default();
+            let command = if command.as_os_str().is_empty() || command.is_absolute() {
+                command
+            } else {
+                install.join(command)
+            };
+            Some(LaunchProfile {
+                command,
+                arguments: Vec::new(),
+                working_directory: Some(install.clone()),
+                launcher_command: launch_uri,
+            })
+        } else {
+            None
+        };
+        result.push(Game::from_installation(
+            title,
+            launcher.label(),
+            Installation {
+                path: install,
+                launcher,
+                launch_profile: profile,
+                available: true,
+            },
+        ));
+        return;
+    }
     if let Some(object) = value.as_object() {
-        for key in keys {
-            if let Some(text) = object.get(*key).and_then(|v| v.as_str()) {
-                return Some(text);
-            }
+        for (key, child) in object {
+            collect_games(child, gog, Some(key), result);
         }
-        for child in object.values() {
-            if let Some(text) = find_string(child, keys) {
-                return Some(text);
-            }
-        }
-    }
-    if let Some(array) = value.as_array() {
+    } else if let Some(array) = value.as_array() {
         for child in array {
-            if let Some(text) = find_string(child, keys) {
-                return Some(text);
-            }
+            collect_games(child, gog, None, result);
         }
     }
-    None
+}
+
+fn field<'a>(value: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(|value| value.as_str())
+            .filter(|text| !text.is_empty())
+    })
+}
+
+fn uri_component(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+                (byte as char).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn collects_every_installed_record_without_mixing_metadata() {
+        let temp = tempdir().unwrap();
+        let first = temp.path().join("one");
+        let second = temp.path().join("two");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        let json = serde_json::json!({
+            "first&game": {"title":"First", "install_path":first},
+            "second": {"title":"Second", "install_path":second, "executable":"run.exe"},
+            "incomplete": {"title":"Not installed"}
+        });
+        let mut result = Vec::new();
+        collect_games(&json, false, None, &mut result);
+        assert_eq!(result.len(), 2);
+        let game = result.iter().find(|game| game.title == "First").unwrap();
+        assert_eq!(game.installations[0].path, first);
+        assert_eq!(
+            game.installations[0]
+                .launch_profile
+                .as_ref()
+                .unwrap()
+                .launcher_command
+                .as_deref(),
+            Some("heroic://launch?appName=first%26game&runner=legendary")
+        );
+    }
 }

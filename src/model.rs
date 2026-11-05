@@ -63,7 +63,10 @@ pub struct Emulator {
 impl Emulator {
     pub fn new(name: impl Into<String>, executable: PathBuf) -> Self {
         let name = name.into();
-        let id = stable_id(&name, &executable);
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        executable.hash(&mut hasher);
+        let id = format!("emulator-{:016x}", hasher.finish());
         Self {
             id,
             name,

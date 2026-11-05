@@ -1293,9 +1293,16 @@ fn normalized_title(title: &str) -> String {
 }
 
 fn same_path(left: &std::path::Path, right: &std::path::Path) -> bool {
-    left.to_string_lossy()
-        .replace('\\', "/")
-        .eq_ignore_ascii_case(&right.to_string_lossy().replace('\\', "/"))
+    #[cfg(windows)]
+    {
+        left.to_string_lossy()
+            .replace('\\', "/")
+            .eq_ignore_ascii_case(&right.to_string_lossy().replace('\\', "/"))
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
 }
 
 fn launch_uri_handler(uri: &str) {

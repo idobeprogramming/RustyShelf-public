@@ -84,6 +84,8 @@ impl Store {
                  profile=COALESCE(installations.profile,excluded.profile), available=MAX(installations.available,excluded.available)",
                 params![new_id, old_id],
             )?;
+            tx.execute("INSERT OR IGNORE INTO game_emulators(game_id,emulator_id) SELECT ?1,emulator_id FROM game_emulators WHERE game_id=?2", params![new_id, old_id])?;
+            tx.execute("INSERT OR IGNORE INTO ignored_games(game_id) SELECT ?1 FROM ignored_games WHERE game_id=?2", params![new_id, old_id])?;
             tx.execute("DELETE FROM games WHERE id=?1", [&old_id])?;
         }
         tx.commit()
@@ -169,7 +171,7 @@ impl Store {
             .map_or_else(|| game.category.clone(), |row| row.2.clone());
         tx.execute(
             "INSERT INTO games(id,title,category,favorite,confirmed,cover_path) VALUES(?1,?2,?3,?4,?5,?6)
-             ON CONFLICT(id) DO UPDATE SET title=excluded.title, category=excluded.category,
+             ON CONFLICT(id) DO UPDATE SET title=CASE WHEN games.confirmed=1 AND excluded.confirmed=0 THEN games.title ELSE excluded.title END, category=excluded.category,
              confirmed=MAX(excluded.confirmed,games.confirmed), cover_path=COALESCE(excluded.cover_path,games.cover_path)",
             params![game.id, game.title, category, favorite, game.confirmed, cover],
         )?;
@@ -182,7 +184,7 @@ impl Store {
                 "INSERT INTO installations(game_id,path,launcher,profile,available) VALUES(?1,?2,?3,?4,?5)
                  ON CONFLICT(game_id,path) DO UPDATE SET
                  launcher=CASE WHEN excluded.launcher='unknown' AND installations.launcher<>'unknown' THEN installations.launcher ELSE excluded.launcher END,
-                 profile=COALESCE(excluded.profile,installations.profile), available=excluded.available",
+                 profile=CASE WHEN excluded.launcher='unknown' AND installations.launcher<>'unknown' THEN installations.profile ELSE COALESCE(excluded.profile,installations.profile) END, available=excluded.available",
                 params![game.id, installation.path.to_string_lossy(), launcher_name(&installation.launcher), profile, installation.available],
             )?;
         }
@@ -412,7 +414,12 @@ mod tests {
         let install = Installation {
             path: PathBuf::from("/games/celeste"),
             launcher: Launcher::Steam,
-            launch_profile: None,
+            launch_profile: Some(crate::model::LaunchProfile {
+                command: PathBuf::new(),
+                arguments: vec![],
+                working_directory: None,
+                launcher_command: Some("steam://rungameid/42".into()),
+            }),
             available: true,
         };
         let game = Game::from_installation("Celeste", "Steam", install.clone());
@@ -425,7 +432,12 @@ mod tests {
                 Installation {
                     path: install.path.clone(),
                     launcher: Launcher::Unknown,
-                    launch_profile: None,
+                    launch_profile: Some(crate::model::LaunchProfile {
+                        command: PathBuf::from("wrong.exe"),
+                        arguments: vec![],
+                        working_directory: None,
+                        launcher_command: None,
+                    }),
                     available: true,
                 },
             ))
@@ -433,8 +445,48 @@ mod tests {
         let loaded_games = store.games().unwrap();
         let loaded = &loaded_games[0];
         assert_eq!(loaded.category, "Plateforme");
+        assert_eq!(loaded.title, "Celeste");
+        assert_eq!(
+            loaded.installations[0]
+                .launch_profile
+                .as_ref()
+                .unwrap()
+                .launcher_command
+                .as_deref(),
+            Some("steam://rungameid/42")
+        );
         assert_eq!(loaded.installations[0].launcher, Launcher::Steam);
         assert!(loaded.confirmed);
+    }
+
+    #[test]
+    fn same_named_emulators_and_existing_manual_installations_survive_rescans() {
+        let temp = tempdir().unwrap();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        for folder in ["stable", "nightly"] {
+            store
+                .save_emulator(&crate::model::Emulator::new(
+                    "Dolphin",
+                    temp.path().join(folder).join("dolphin"),
+                ))
+                .unwrap();
+        }
+        assert_eq!(store.emulators().unwrap().len(), 2);
+        let game = Game::from_installation(
+            "Manual",
+            "Ajout manuel",
+            Installation {
+                path: temp.path().to_path_buf(),
+                launcher: Launcher::Manual,
+                launch_profile: None,
+                available: true,
+            },
+        );
+        store.save_game(&game).unwrap();
+        store
+            .mark_unseen_under_roots_unavailable(&[temp.path().to_path_buf()], &[], &[])
+            .unwrap();
+        assert!(store.games().unwrap()[0].installations[0].available);
     }
 
     #[test]
