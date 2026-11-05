@@ -31,9 +31,120 @@ impl Store {
                available INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(game_id, path)
              );
              CREATE TABLE IF NOT EXISTS excluded_paths (path TEXT PRIMARY KEY);
+             CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS emulators (id TEXT PRIMARY KEY, name TEXT NOT NULL, executable TEXT NOT NULL UNIQUE);
+             CREATE TABLE IF NOT EXISTS game_emulators (game_id TEXT PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE, emulator_id TEXT NOT NULL REFERENCES emulators(id) ON DELETE CASCADE);
              CREATE TABLE IF NOT EXISTS categories (name TEXT PRIMARY KEY);",
         )?;
-        Ok(Self { connection })
+        let store = Self { connection };
+        store.merge_legacy_duplicates()?;
+        Ok(store)
+    }
+
+    fn merge_legacy_duplicates(&self) -> rusqlite::Result<()> {
+        let tx = self.connection.unchecked_transaction()?;
+        let records = {
+            let mut query = tx.prepare(
+                "SELECT id,title,category,favorite,confirmed,cover_path,category_custom FROM games",
+            )?;
+            let rows = query.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, bool>(3)?,
+                    row.get::<_, bool>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, bool>(6)?,
+                ))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for (old_id, title, category, favorite, confirmed, cover, custom_category) in records {
+            let new_id = crate::model::stable_id(&title, std::path::Path::new(""));
+            if old_id == new_id {
+                continue;
+            }
+            tx.execute(
+                "INSERT OR IGNORE INTO games(id,title,category,favorite,confirmed,cover_path,category_custom) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![new_id, title, category, favorite, confirmed, cover, custom_category],
+            )?;
+            tx.execute(
+                "UPDATE games SET favorite=MAX(favorite,?2), cover_path=COALESCE(cover_path,?3),
+                 category=CASE WHEN category_custom=1 THEN category WHEN ?4=1 THEN ?5 WHEN ?6=1 AND confirmed=0 THEN ?5 ELSE category END,
+                 confirmed=MAX(confirmed,?6), category_custom=MAX(category_custom,?4) WHERE id=?1",
+                params![new_id, favorite, cover, custom_category, category, confirmed],
+            )?;
+            tx.execute(
+                "INSERT INTO installations(game_id,path,launcher,profile,available)
+                 SELECT ?1,path,launcher,profile,available FROM installations WHERE game_id=?2 AND 1
+                 ON CONFLICT(game_id,path) DO UPDATE SET
+                 launcher=CASE WHEN installations.launcher='unknown' THEN excluded.launcher ELSE installations.launcher END,
+                 profile=COALESCE(installations.profile,excluded.profile), available=MAX(installations.available,excluded.available)",
+                params![new_id, old_id],
+            )?;
+            tx.execute("DELETE FROM games WHERE id=?1", [&old_id])?;
+        }
+        tx.commit()
+    }
+
+    pub fn preference(&self, key: &str) -> rusqlite::Result<Option<String>> {
+        self.connection
+            .query_row("SELECT value FROM preferences WHERE key=?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()
+    }
+
+    pub fn set_preference(&self, key: &str, value: &str) -> rusqlite::Result<()> {
+        self.connection.execute("INSERT INTO preferences(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key, value])?;
+        Ok(())
+    }
+
+    pub fn save_emulator(&self, emulator: &crate::model::Emulator) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "INSERT INTO emulators(id,name,executable) VALUES(?1,?2,?3) ON CONFLICT(executable) DO UPDATE SET name=excluded.name",
+            params![emulator.id, emulator.name, emulator.executable.to_string_lossy()],
+        )?;
+        Ok(())
+    }
+
+    pub fn emulators(&self) -> rusqlite::Result<Vec<crate::model::Emulator>> {
+        let mut query = self
+            .connection
+            .prepare("SELECT id,name,executable FROM emulators ORDER BY name COLLATE NOCASE")?;
+        let rows = query.query_map([], |row| {
+            Ok(crate::model::Emulator {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                executable: PathBuf::from(row.get::<_, String>(2)?),
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn set_game_emulator(
+        &self,
+        game_id: &str,
+        emulator_id: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        if let Some(emulator_id) = emulator_id {
+            self.connection.execute("INSERT INTO game_emulators(game_id,emulator_id) VALUES(?1,?2) ON CONFLICT(game_id) DO UPDATE SET emulator_id=excluded.emulator_id", params![game_id, emulator_id])?;
+        } else {
+            self.connection
+                .execute("DELETE FROM game_emulators WHERE game_id=?1", [game_id])?;
+        }
+        Ok(())
+    }
+
+    pub fn game_emulator(&self, game_id: &str) -> rusqlite::Result<Option<String>> {
+        self.connection
+            .query_row(
+                "SELECT emulator_id FROM game_emulators WHERE game_id=?1",
+                [game_id],
+                |row| row.get(0),
+            )
+            .optional()
     }
 
     pub fn save_game(&self, game: &Game) -> rusqlite::Result<()> {
@@ -112,6 +223,14 @@ impl Store {
         self.connection.execute(
             "UPDATE games SET favorite=?2 WHERE id=?1",
             params![id, favorite],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_confirmed(&self, id: &str, confirmed: bool) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "UPDATE games SET confirmed=?2 WHERE id=?1",
+            params![id, confirmed],
         )?;
         Ok(())
     }
@@ -315,6 +434,75 @@ mod tests {
                 .find(|i| i.path == outside)
                 .unwrap()
                 .available
+        );
+    }
+
+    #[test]
+    fn opening_the_library_merges_legacy_per_installation_ids() {
+        use std::hash::{Hash, Hasher};
+        let temp = tempdir().unwrap();
+        let db = temp.path().join("library.db");
+        let store = Store::open(&db).unwrap();
+        let first = Game::from_installation(
+            "Moonlight Arcade",
+            "Steam",
+            Installation {
+                path: PathBuf::from("/games/one"),
+                launcher: Launcher::Steam,
+                launch_profile: None,
+                available: true,
+            },
+        );
+        store.save_game(&first).unwrap();
+        drop(store);
+
+        let old_path = "/backup/moonlight";
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        "moonlight arcade".hash(&mut hasher);
+        old_path.hash(&mut hasher);
+        let old_id = format!("{:016x}", hasher.finish());
+        let connection = Connection::open(&db).unwrap();
+        connection.execute("INSERT INTO games(id,title,category,favorite,confirmed) VALUES(?1,'Moonlight Arcade','À confirmer',1,0)", [&old_id]).unwrap();
+        connection.execute("INSERT INTO installations(game_id,path,launcher,available) VALUES(?1,?2,'unknown',1)", params![old_id, old_path]).unwrap();
+        drop(connection);
+
+        let migrated = Store::open(&db).unwrap().games().unwrap();
+        assert_eq!(migrated.len(), 1);
+        assert!(migrated[0].favorite);
+        assert_eq!(migrated[0].installations.len(), 2);
+        assert!(migrated[0].confirmed);
+    }
+
+    #[test]
+    fn stores_default_and_per_game_emulator_choices() {
+        let temp = tempdir().unwrap();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        let game = Game::from_installation(
+            "Disc Game",
+            "Image disque",
+            Installation {
+                path: PathBuf::from("/roms/game.iso"),
+                launcher: Launcher::Unknown,
+                launch_profile: None,
+                available: true,
+            },
+        );
+        store.save_game(&game).unwrap();
+        let emulator = crate::model::Emulator::new("Dolphin", PathBuf::from("/usr/bin/dolphin"));
+        store.save_emulator(&emulator).unwrap();
+        store
+            .set_preference("preferred_emulator", &emulator.id)
+            .unwrap();
+        store
+            .set_game_emulator(&game.id, Some(&emulator.id))
+            .unwrap();
+        assert_eq!(
+            store.preference("preferred_emulator").unwrap().as_deref(),
+            Some(emulator.id.as_str())
+        );
+        assert_eq!(
+            store.game_emulator(&game.id).unwrap().as_deref(),
+            Some(emulator.id.as_str())
         );
     }
 }

@@ -1,4 +1,7 @@
-use crate::model::{Game, Installation, Launcher};
+use crate::{
+    emulator,
+    model::{Game, Installation, LaunchProfile, Launcher},
+};
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -77,6 +80,7 @@ pub fn scan_roots(
         }
         let walker = WalkDir::new(root)
             .follow_links(false)
+            .max_open(16)
             .into_iter()
             .filter_entry(|entry| should_descend(entry, exclusions));
         for entry in walker {
@@ -93,6 +97,11 @@ pub fn scan_roots(
                         }));
                     }
                     if !entry.file_type().is_file() || !is_candidate_executable(entry.path()) {
+                        if entry.file_type().is_file() && emulator::is_disc_image(entry.path()) {
+                            if let Some(game) = candidate_from_disc_image(entry.path()) {
+                                emit(ScanEvent::Candidate(game));
+                            }
+                        }
                         continue;
                     }
                     if let Some(game) = candidate_from_executable(entry.path()) {
@@ -121,9 +130,22 @@ fn should_descend(entry: &DirEntry, exclusions: &[PathBuf]) -> bool {
         return true;
     }
     #[cfg(target_os = "linux")]
-    if ["/proc", "/sys", "/dev", "/run", "/tmp"]
-        .iter()
-        .any(|system| path == Path::new(system) || path.starts_with(system))
+    if [
+        "/proc",
+        "/sys",
+        "/dev",
+        "/run",
+        "/tmp",
+        "/usr/bin",
+        "/usr/lib",
+        "/bin",
+        "/sbin",
+        "/etc",
+        "/var/lib",
+        "/var/cache",
+    ]
+    .iter()
+    .any(|system| path == Path::new(system) || path.starts_with(system))
     {
         return false;
     }
@@ -138,6 +160,9 @@ fn should_descend(entry: &DirEntry, exclusions: &[PathBuf]) -> bool {
             | "proc"
             | "sys"
             | "dev"
+            | ".cache"
+            | "target"
+            | "temp"
     )
 }
 
@@ -149,23 +174,118 @@ fn is_candidate_executable(path: &Path) -> bool {
     }
     #[cfg(not(windows))]
     {
-        extension.eq_ignore_ascii_case("desktop") || extension.eq_ignore_ascii_case("sh")
+        extension.eq_ignore_ascii_case("desktop")
+            || extension.eq_ignore_ascii_case("sh")
+            || std::fs::metadata(path).is_ok_and(|metadata| {
+                use std::os::unix::fs::PermissionsExt;
+                metadata.permissions().mode() & 0o111 != 0
+            })
     }
 }
 
 fn candidate_from_executable(path: &Path) -> Option<Game> {
-    let stem = path.file_stem()?.to_string_lossy().to_string();
-    if !looks_like_game(&stem) {
+    let is_desktop = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("desktop"));
+    let desktop_text = is_desktop
+        .then(|| std::fs::read_to_string(path).ok())
+        .flatten();
+    let title = desktop_text
+        .as_deref()
+        .and_then(|text| desktop_value(text, "Name"))
+        .or_else(|| {
+            path.file_stem()
+                .map(|stem| stem.to_string_lossy().to_string())
+        })?;
+    if !looks_like_game(&title) {
         return None;
     }
     let folder = path.parent()?.to_path_buf();
+    let (command, arguments, working_directory) = if let Some(text) = desktop_text.as_deref() {
+        let exec = desktop_value(text, "Exec")?;
+        let mut pieces = desktop_exec_arguments(&exec)
+            .into_iter()
+            .filter(|part| !part.starts_with('%'));
+        let command = PathBuf::from(pieces.next()?);
+        let arguments = pieces.collect();
+        let working_directory = desktop_value(text, "Path")
+            .map(PathBuf::from)
+            .or_else(|| command.parent().map(PathBuf::from))
+            .or_else(|| Some(folder.clone()));
+        (command, arguments, working_directory)
+    } else {
+        (path.to_path_buf(), Vec::new(), Some(folder.clone()))
+    };
+    let profile = Some(LaunchProfile {
+        command,
+        arguments,
+        working_directory,
+        launcher_command: None,
+    });
     let installation = Installation {
         path: folder,
         launcher: Launcher::Unknown,
-        launch_profile: None,
+        launch_profile: profile,
         available: true,
     };
-    Some(Game::from_installation(stem, "À confirmer", installation))
+    Some(Game::from_installation(title, "À confirmer", installation))
+}
+
+fn desktop_exec_arguments(exec: &str) -> Vec<String> {
+    let mut arguments = Vec::new();
+    let mut argument = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for character in exec.chars() {
+        if escaped {
+            argument.push(character);
+            escaped = false;
+        } else if character == '\\' && quote != Some('\'') {
+            escaped = true;
+        } else if Some(character) == quote {
+            quote = None;
+        } else if quote.is_none() && matches!(character, '\'' | '"') {
+            quote = Some(character);
+        } else if quote.is_none() && character.is_whitespace() {
+            if !argument.is_empty() {
+                arguments.push(std::mem::take(&mut argument));
+            }
+        } else {
+            argument.push(character);
+        }
+    }
+    if escaped {
+        argument.push('\\');
+    }
+    if !argument.is_empty() {
+        arguments.push(argument);
+    }
+    arguments
+}
+
+fn desktop_value(contents: &str, key: &str) -> Option<String> {
+    contents
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{key}=")).map(str::to_owned))
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn candidate_from_disc_image(path: &Path) -> Option<Game> {
+    let title = path.file_stem()?.to_string_lossy().trim().to_string();
+    if !looks_like_game(&title) {
+        return None;
+    }
+    Some(Game::from_installation(
+        title,
+        "Image disque · À confirmer",
+        Installation {
+            path: path.to_path_buf(),
+            launcher: Launcher::Unknown,
+            launch_profile: None,
+            available: true,
+        },
+    ))
 }
 
 fn looks_like_game(name: &str) -> bool {
@@ -256,5 +376,35 @@ mod tests {
         assert!(!looks_like_game("7za"));
         assert!(!looks_like_game("setup_game"));
         assert!(looks_like_game("Moonlight Valley"));
+    }
+
+    #[test]
+    fn disc_images_are_added_to_the_review_queue() {
+        let game = candidate_from_disc_image(Path::new("/roms/Super Mario.iso")).unwrap();
+        assert_eq!(game.title, "Super Mario");
+        assert!(!game.confirmed);
+        assert_eq!(
+            game.installations[0].path,
+            PathBuf::from("/roms/Super Mario.iso")
+        );
+    }
+
+    #[test]
+    fn desktop_shortcuts_use_their_display_name_and_launch_command() {
+        let temp = tempdir().unwrap();
+        let shortcut = temp.path().join("moonlight.desktop");
+        fs::write(&shortcut, "[Desktop Entry]\nName=Moonlight Arcade\nExec=\"/games/Moonlight Arcade/run game\" --fullscreen %U\nPath=/games/Moonlight Arcade").unwrap();
+        let game = candidate_from_executable(&shortcut).unwrap();
+        assert_eq!(game.title, "Moonlight Arcade");
+        let profile = game.installations[0].launch_profile.as_ref().unwrap();
+        assert_eq!(
+            profile.command,
+            PathBuf::from("/games/Moonlight Arcade/run game")
+        );
+        assert_eq!(profile.arguments, ["--fullscreen"]);
+        assert_eq!(
+            profile.working_directory,
+            Some(PathBuf::from("/games/Moonlight Arcade"))
+        );
     }
 }

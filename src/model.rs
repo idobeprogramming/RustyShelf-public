@@ -53,6 +53,25 @@ pub struct Game {
     pub installations: Vec<Installation>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Emulator {
+    pub id: String,
+    pub name: String,
+    pub executable: PathBuf,
+}
+
+impl Emulator {
+    pub fn new(name: impl Into<String>, executable: PathBuf) -> Self {
+        let name = name.into();
+        let id = stable_id(&name, &executable);
+        Self {
+            id,
+            name,
+            executable,
+        }
+    }
+}
+
 impl Game {
     pub fn from_installation(
         title: impl Into<String>,
