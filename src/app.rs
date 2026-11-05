@@ -39,6 +39,8 @@ enum Theme {
     Dark,
     Light,
     Vista,
+    WindowsXp,
+    Windows98,
     LiquidGlass,
 }
 
@@ -47,6 +49,8 @@ impl Theme {
         match value.as_deref() {
             Some("light") => Self::Light,
             Some("vista") => Self::Vista,
+            Some("xp") => Self::WindowsXp,
+            Some("win98") => Self::Windows98,
             Some("liquid") => Self::LiquidGlass,
             _ => Self::Dark,
         }
@@ -56,6 +60,8 @@ impl Theme {
             Self::Dark => "dark",
             Self::Light => "light",
             Self::Vista => "vista",
+            Self::WindowsXp => "xp",
+            Self::Windows98 => "win98",
             Self::LiquidGlass => "liquid",
         }
     }
@@ -67,6 +73,10 @@ impl Theme {
             (Self::Light, Language::English) => "Light",
             (Self::Vista, Language::French) => "Windows Vista",
             (Self::Vista, Language::English) => "Windows Vista",
+            (Self::WindowsXp, Language::French) => "Windows XP",
+            (Self::WindowsXp, Language::English) => "Windows XP",
+            (Self::Windows98, Language::French) => "Windows 98",
+            (Self::Windows98, Language::English) => "Windows 98",
             (Self::LiquidGlass, Language::French) => "Liquid Glass",
             (Self::LiquidGlass, Language::English) => "Liquid Glass",
         }
@@ -75,7 +85,7 @@ impl Theme {
 
 fn apply_theme(ctx: &egui::Context, theme: Theme) {
     let mut visuals = match theme {
-        Theme::Light | Theme::Vista => egui::Visuals::light(),
+        Theme::Light | Theme::Vista | Theme::WindowsXp | Theme::Windows98 => egui::Visuals::light(),
         Theme::Dark | Theme::LiquidGlass => egui::Visuals::dark(),
     };
     match theme {
@@ -96,6 +106,32 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
             visuals.widgets.hovered.bg_fill = Color32::from_rgb(188, 220, 246);
             visuals.widgets.active.bg_fill = Color32::from_rgb(89, 151, 204);
             visuals.window_corner_radius = egui::CornerRadius::same(5);
+        }
+        Theme::WindowsXp => {
+            visuals.panel_fill = Color32::from_rgb(226, 236, 252);
+            visuals.window_fill = Color32::from_rgb(246, 249, 255);
+            visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(233, 241, 253);
+            visuals.widgets.inactive.bg_fill = Color32::from_rgb(219, 233, 252);
+            visuals.widgets.hovered.bg_fill = Color32::from_rgb(192, 218, 250);
+            visuals.widgets.active.bg_fill = Color32::from_rgb(49, 106, 197);
+            visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, Color32::WHITE);
+            visuals.window_corner_radius = egui::CornerRadius::same(8);
+        }
+        Theme::Windows98 => {
+            let classic_gray = Color32::from_rgb(192, 192, 192);
+            visuals.panel_fill = classic_gray;
+            visuals.window_fill = classic_gray;
+            visuals.widgets.noninteractive.bg_fill = classic_gray;
+            visuals.widgets.inactive.bg_fill = classic_gray;
+            visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, Color32::WHITE);
+            visuals.widgets.hovered.bg_fill = Color32::from_rgb(212, 208, 200);
+            visuals.widgets.active.bg_fill = Color32::from_rgb(0, 0, 128);
+            visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, Color32::WHITE);
+            visuals.window_corner_radius = egui::CornerRadius::ZERO;
+            visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::ZERO;
+            visuals.widgets.inactive.corner_radius = egui::CornerRadius::ZERO;
+            visuals.widgets.hovered.corner_radius = egui::CornerRadius::ZERO;
+            visuals.widgets.active.corner_radius = egui::CornerRadius::ZERO;
         }
         Theme::LiquidGlass => {
             visuals.panel_fill = Color32::from_rgba_unmultiplied(20, 29, 49, 235);
@@ -913,7 +949,14 @@ impl GameShelfApp {
                 egui::ComboBox::from_label(tr(self.language, "Thème", "Theme"))
                     .selected_text(self.theme.label(self.language))
                     .show_ui(ui, |ui| {
-                        for theme in [Theme::Dark, Theme::Light, Theme::Vista, Theme::LiquidGlass] {
+                        for theme in [
+                            Theme::Dark,
+                            Theme::Light,
+                            Theme::Vista,
+                            Theme::WindowsXp,
+                            Theme::Windows98,
+                            Theme::LiquidGlass,
+                        ] {
                             ui.selectable_value(&mut self.theme, theme, theme.label(self.language));
                         }
                     });
@@ -1076,6 +1119,8 @@ fn card_color(theme: Theme) -> Color32 {
         Theme::Dark => Color32::from_rgb(24, 27, 36),
         Theme::Light => Color32::from_rgb(249, 250, 253),
         Theme::Vista => Color32::from_rgb(229, 241, 251),
+        Theme::WindowsXp => Color32::from_rgb(233, 241, 253),
+        Theme::Windows98 => Color32::from_rgb(212, 208, 200),
         Theme::LiquidGlass => Color32::from_rgba_unmultiplied(66, 85, 119, 120),
     }
 }
@@ -1085,6 +1130,8 @@ fn theme_accent(theme: Theme) -> Color32 {
         Theme::Dark => Color32::from_rgb(57, 50, 86),
         Theme::Light => Color32::from_rgb(226, 221, 249),
         Theme::Vista => Color32::from_rgb(190, 220, 244),
+        Theme::WindowsXp => Color32::from_rgb(49, 106, 197),
+        Theme::Windows98 => Color32::from_rgb(0, 0, 128),
         Theme::LiquidGlass => Color32::from_rgba_unmultiplied(112, 145, 199, 150),
     }
 }
@@ -1094,12 +1141,17 @@ fn placeholder_color(theme: Theme) -> Color32 {
         Theme::Dark => Color32::from_rgb(51, 47, 77),
         Theme::Light => Color32::from_rgb(220, 216, 239),
         Theme::Vista => Color32::from_rgb(170, 204, 229),
+        Theme::WindowsXp => Color32::from_rgb(190, 218, 250),
+        Theme::Windows98 => Color32::from_rgb(192, 192, 192),
         Theme::LiquidGlass => Color32::from_rgba_unmultiplied(121, 151, 198, 140),
     }
 }
 
 fn theme_text(theme: Theme) -> Color32 {
-    if matches!(theme, Theme::Light | Theme::Vista) {
+    if matches!(
+        theme,
+        Theme::Light | Theme::Vista | Theme::WindowsXp | Theme::Windows98
+    ) {
         Color32::from_rgb(35, 43, 55)
     } else {
         Color32::WHITE
@@ -1107,7 +1159,10 @@ fn theme_text(theme: Theme) -> Color32 {
 }
 
 fn theme_muted_text(theme: Theme) -> Color32 {
-    if matches!(theme, Theme::Light | Theme::Vista) {
+    if matches!(
+        theme,
+        Theme::Light | Theme::Vista | Theme::WindowsXp | Theme::Windows98
+    ) {
         Color32::from_rgb(90, 101, 116)
     } else {
         Color32::from_rgb(190, 196, 209)
@@ -1231,6 +1286,18 @@ impl eframe::App for GameShelfApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_classic_theme_preferences_round_trip() {
+        for (theme, key, label) in [
+            (Theme::WindowsXp, "xp", "Windows XP"),
+            (Theme::Windows98, "win98", "Windows 98"),
+        ] {
+            assert_eq!(Theme::parse(Some(key.to_owned())), theme);
+            assert_eq!(theme.key(), key);
+            assert_eq!(theme.label(Language::French), label);
+        }
+    }
 
     #[test]
     fn emulator_launch_command_passes_image_path_without_running_it() {

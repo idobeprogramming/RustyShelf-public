@@ -9,7 +9,7 @@ GameShelf est une bibliothèque de jeux de bureau écrite en Rust. Elle rassembl
 - **Organiser** : rechercher, filtrer par source, modifier une catégorie, marquer un favori, ajouter un jeu et choisir une image locale.
 - **Lancer** : utiliser le lien Steam, Heroic ou Lutris disponible, ou lancer directement le chemin enregistré. Sous Linux, Proton/Wine doit déjà être configuré dans le lanceur.
 - **Images disque** : les fichiers ISO, CHD, CSO, WBFS, GCZ, CUE, PBP, CDI, NRG et MDF apparaissent dans la file « À confirmer ». Choisir un émulateur par défaut dans les options ou un émulateur propre à chaque jeu, puis le lancer depuis sa fiche. GameShelf transmet le chemin de l’image à l’émulateur ; celui-ci doit être installé et compatible avec le format.
-- **Personnaliser** : options de langue français/anglais et thèmes sombre, clair, Windows Vista et Liquid Glass. Le thème Liquid Glass dessine des panneaux translucides dans l’application.
+- **Personnaliser** : options de langue français/anglais et thèmes sombre, clair, Windows 98, Windows XP, Windows Vista et Liquid Glass. Le thème Liquid Glass dessine des panneaux translucides dans l’application.
 
 Les noms et manifestes des lanceurs varient selon leur version. Les jeux autonomes non détectés peuvent être ajoutés avec le bouton **＋ Jeu**. GameShelf ne télécharge pas de jaquettes et ne contacte aucun service distant.
 
