@@ -1706,11 +1706,16 @@ impl RustyShelfApp {
     }
 
     fn options_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_options;
         let mut close = false;
+        let min_width = (ctx.screen_rect().width() - 48.0).clamp(280.0, 680.0);
         egui::Window::new(tr(self.language, "Options", "Settings"))
+            .id(egui::Id::new("options-window"))
+            .open(&mut open)
             .collapsible(false)
             .resizable(true)
-            .default_width(610.0)
+            .min_width(min_width)
+            .default_width(760.0)
             .vscroll(true)
             .show(ctx, |ui| {
                 ui.heading(tr(self.language, "Apparence et langue", "Appearance and language"));
@@ -1805,14 +1810,16 @@ impl RustyShelfApp {
                 ui.label(tr(self.language, "Choisis les disques montés à analyser. Les jeux et images disque trouvés restent locaux.", "Choose mounted drives to scan. Games and disc images stay on this device."));
                 egui::ScrollArea::vertical()
                     .id_salt("scan-volumes")
+                    .auto_shrink([false, true])
                     .max_height(220.0)
                     .show(ui, |ui| {
-                        for (index, volume) in self.volumes.iter().enumerate() {
-                            let selected = self.selected_volumes.get_mut(index).unwrap();
-                            ui.checkbox(
+                        for (volume, selected) in self.volumes.iter().zip(&mut self.selected_volumes) {
+                            ui.add_sized(
+                                [ui.available_width(), 0.0],
+                                egui::Checkbox::new(
                                 selected,
                                 format!(
-                                    "{}  ·  {}  ·  {}{}",
+                                    "{}\n{}  ·  {}{}",
                                     volume.root.display(),
                                     volume.name,
                                     volume.filesystem,
@@ -1822,7 +1829,7 @@ impl RustyShelfApp {
                                         ""
                                     }
                                 ),
-                            );
+                            )).on_hover_text(volume.root.display().to_string());
                         }
                     });
                 ui.horizontal(|ui| {
@@ -1923,7 +1930,7 @@ impl RustyShelfApp {
                     }
                 }
             });
-        if close {
+        if close || !open {
             self.show_options = false;
         }
     }
@@ -2311,11 +2318,53 @@ mod tests {
     }
 
     #[test]
+    fn options_close_button_closes_and_window_can_reopen() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        app.show_options = true;
+        let input = |events| egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 900.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            let _ = ctx.run(input(vec![]), |ctx| app.options_window(ctx));
+        }
+        let rect = ctx
+            .memory(|memory| memory.area_rect(egui::Id::new("options-window")))
+            .unwrap();
+        assert!(rect.width() >= 680.0);
+        let pos = egui::pos2(rect.right() - 17.0, rect.top() + 17.0);
+        for pressed in [true, false] {
+            let _ = ctx.run(
+                input(vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]),
+                |ctx| app.options_window(ctx),
+            );
+        }
+        assert!(!app.show_options, "La croix doit fermer les options");
+        app.show_options = true;
+        let _ = ctx.run(input(vec![]), |ctx| app.options_window(ctx));
+        assert!(app.show_options);
+    }
+
+    #[test]
     fn library_and_options_render_at_compact_and_wide_sizes() {
         let ctx = egui::Context::default();
         ctx.options_mut(|options| options.warn_on_id_clash = true);
         let mut app = test_app();
         app.refresh_appearance(&ctx);
+        app.show_options = true;
         app.volumes = vec![Volume {
             root: "C:/".into(),
             name: "Système".into(),
