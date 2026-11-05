@@ -15,8 +15,13 @@ pub enum Launcher {
 impl Launcher {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Steam => "Steam", Self::Epic => "Epic Games", Self::Heroic => "Heroic",
-            Self::Lutris => "Lutris", Self::Gog => "GOG", Self::Manual => "Ajout manuel", Self::Unknown => "À confirmer",
+            Self::Steam => "Steam",
+            Self::Epic => "Epic Games",
+            Self::Heroic => "Heroic",
+            Self::Lutris => "Lutris",
+            Self::Gog => "GOG",
+            Self::Manual => "Ajout manuel",
+            Self::Unknown => "À confirmer",
         }
     }
 }
@@ -49,10 +54,22 @@ pub struct Game {
 }
 
 impl Game {
-    pub fn from_installation(title: impl Into<String>, category: impl Into<String>, installation: Installation) -> Self {
+    pub fn from_installation(
+        title: impl Into<String>,
+        category: impl Into<String>,
+        installation: Installation,
+    ) -> Self {
         let title = title.into();
         let id = stable_id(&title, &installation.path);
-        Self { id, title, category: category.into(), favorite: false, confirmed: installation.launcher != Launcher::Unknown, cover_path: None, installations: vec![installation] }
+        Self {
+            id,
+            title,
+            category: category.into(),
+            favorite: false,
+            confirmed: installation.launcher != Launcher::Unknown,
+            cover_path: None,
+            installations: vec![installation],
+        }
     }
 }
 
@@ -69,6 +86,9 @@ mod tests {
     use super::*;
     #[test]
     fn same_installation_has_stable_id() {
-        assert_eq!(stable_id("Celeste", std::path::Path::new("/games/celeste")), stable_id("celeste", std::path::Path::new("/games/celeste")));
+        assert_eq!(
+            stable_id("Celeste", std::path::Path::new("/games/celeste")),
+            stable_id("celeste", std::path::Path::new("/games/celeste"))
+        );
     }
 }

@@ -1,4 +1,6 @@
 mod app;
+mod model;
+mod store;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
