@@ -16,7 +16,7 @@
 
 ## Vérification et limites
 
-32 tests Rust passent sous Windows, ainsi que le formatage et Clippy. Les tests utilisent des données temporaires et des commandes fictives ; aucun jeu réel n’est lancé.
+37 tests Rust passent sous Windows, ainsi que le formatage et Clippy. Les tests utilisent des données temporaires et des commandes fictives ; aucun jeu réel n’est lancé.
 
 La détection autonome reste une heuristique : les moteurs inconnus et jeux sans fichiers reconnaissables nécessitent l’ajout manuel. Une application utilisant un moteur de jeu peut encore être proposée à confirmation. Les formats de configuration des lanceurs peuvent évoluer.
 
@@ -33,10 +33,18 @@ La compilation optimisée et le paquet Windows sont vérifiés localement. Cette
 | Jeux homonymes | Les versions sur consoles différentes gardent des identités distinctes après réouverture. |
 | Recherche et filtres | Recherche titre/catégorie/console, type PC/ROM, source, disponibilité, favoris et trois tris dans toutes les vues. |
 | Organisation | Favoris et catégories personnalisées disponibles dans la navigation. |
-| Émulation | Priorité au choix par jeu, puis par console, puis au défaut général. |
+| Émulation | Association uniquement par catégorie, configurée dans la vue de cette catégorie. Aucun héritage global ou par jeu. |
 | Volumes amovibles | Actualisation des disques depuis les options, sans redémarrage. |
 | Sauvegarde | Copie cohérente SQLite avec réglages ; export JSON du catalogue. Aucun fichier de jeu n’est copié. |
 
 Les tests couvrent aussi la construction de l’interface egui en 780 et 1280 pixels, les fichiers CSS invalides ou trop volumineux, les filtres cumulés, le scan de ROMs Unicode, la séparation des consoles et les sauvegardes. Ce test de construction d’interface ne remplace pas une vérification visuelle sur le système cible.
 
 Les archives ROM ZIP/7z, le choix automatique d’un cœur RetroArch, le téléchargement de jaquettes et le CSS de navigateur complet ne sont pas implémentés. Un émulateur nécessitant des arguments supplémentaires doit être fourni par un script de lancement déjà configuré. Les fichiers CSS, jaquettes et jeux restent des ressources locales référencées par leur chemin.
+
+## Correction du classement des images et des diagnostics
+
+Les dossiers ne sont plus utilisés pour deviner la console d’une image disque. Les ISO, CHD et autres conteneurs sont regroupés dans « Images à classer ». Les anciens groupes contenant plusieurs images sont séparés pour permettre un classement individuel, avec conservation des favoris et des choix manuels. Les anciens libellés automatiques ne déterminent plus l’affichage ni la recherche. Les nouveaux identifiants d’image dépendent du fichier ; un rescan réutilise les identifiants existants pour préserver les corrections.
+
+Les accès refusés et chemins devenus indisponibles sont signalés comme non analysés, séparément des erreurs de stockage ou de lecture. Le dernier rapport est enregistré en base et exportable. Les listes de détails sont bornées, et les compteurs restent exacts. Un test d’interface contrôle également l’absence de messages de collision d’identifiants egui dans les vues testées.
+
+L’application était fermée lors de l’inspection des fenêtres : les messages exacts de la session signalée n’ont pas été observés. Les corrections ci-dessus ont été validées sur des cas reproductibles et des données temporaires ; un message persistant pourra être analysé grâce au rapport exporté.
