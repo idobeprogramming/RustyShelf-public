@@ -265,9 +265,13 @@ fn candidate_from_executable(path: &Path) -> Option<Game> {
         .extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("desktop"));
-    let desktop_text = is_desktop
-        .then(|| std::fs::read_to_string(path).ok())
-        .flatten();
+    let desktop_text = if is_desktop {
+        // An unreadable shortcut must not fall back to launching the .desktop
+        // file as if it were an executable, even beside recognizable game assets.
+        Some(crate::sources::read_manifest_text(path).ok()?)
+    } else {
+        None
+    };
     let title = desktop_text
         .as_deref()
         .and_then(|text| desktop_value(text, "Name"))
@@ -450,6 +454,17 @@ mod tests {
     use super::*;
     use std::{fs, sync::mpsc};
     use tempfile::tempdir;
+
+    #[test]
+    fn invalid_or_oversized_shortcuts_cannot_fall_back_to_direct_execution() {
+        let temp = tempdir().unwrap();
+        fs::create_dir(temp.path().join("game_Data")).unwrap();
+        let shortcut = temp.path().join("game.desktop");
+        fs::write(&shortcut, [0xff, 0xfe]).unwrap();
+        assert!(candidate_from_executable(&shortcut).is_none());
+        fs::write(&shortcut, vec![b' '; 4 * 1024 * 1024 + 1]).unwrap();
+        assert!(candidate_from_executable(&shortcut).is_none());
+    }
 
     #[test]
     fn overlapping_roots_are_scanned_once_and_cancellation_stops_after_a_candidate() {

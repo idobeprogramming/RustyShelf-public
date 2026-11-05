@@ -16,7 +16,7 @@
 
 ## Vérification et limites
 
-59 tests Rust passent sous Windows, ainsi que le formatage et Clippy. Les nouveaux tests de régression utilisent des données temporaires et des commandes fictives ; aucun jeu réel n’est lancé.
+60 tests Rust passent sous Windows, ainsi que le formatage et Clippy. Les nouveaux tests de régression utilisent des données temporaires et des commandes fictives ; aucun jeu réel n’est lancé.
 
 La détection autonome reste une heuristique : les moteurs inconnus et jeux sans fichiers reconnaissables nécessitent l’ajout manuel. Une application utilisant un moteur de jeu peut encore être proposée à confirmation. Les formats de configuration des lanceurs peuvent évoluer.
 
@@ -77,6 +77,8 @@ Limites encore présentes dans les adaptateurs : la lecture Lutris couvre un sou
 - Nouveau scan limité à un dossier, testé de bout en bout avec le canal de progression et une base temporaire. Il conserve les jeux situés hors de son périmètre.
 - Options : croix testée par clic simulé, réouverture vérifiée, largeur minimale adaptée à la fenêtre et lignes de disques sur toute la largeur.
 
-Validation : 59 tests passent, formatage et Clippy passent. Aucun jeu réel n’a été lancé et aucune nouvelle dépendance n’a été ajoutée. Les tests couvrent les profils GOG, les manifestes Steam compacts/invalides, les lectures trop volumineuses, l’annulation, les faux positifs et la conservation des corrections. La signature d’un conteneur n’est pas une validation intégrale de son contenu ; les résultats incertains nécessitent toujours une confirmation. Les catalogues réels complets et CachyOS restent à vérifier sur les machines cibles.
+Validation : 60 tests passent, formatage et Clippy passent. Aucun jeu réel n’a été lancé et aucune nouvelle dépendance n’a été ajoutée. Les tests couvrent les profils GOG, les manifestes Steam compacts/invalides, les lectures trop volumineuses, l’annulation, les faux positifs et la conservation des corrections. La signature d’un conteneur n’est pas une validation intégrale de son contenu ; les résultats incertains nécessitent toujours une confirmation. Les catalogues réels complets et CachyOS restent à vérifier sur les machines cibles.
 
 Références de format utilisées pendant le développement (aucun accès réseau dans l’application) : [tâches GOG documentées par Heroic](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/wiki/How-To%3A-DOSBOX-and-SCUMMVM), [signatures de conteneurs utilisées par PPSSPP](https://github.com/hrydgard/ppsspp/blob/master/Core/FileSystems/BlockDevices.cpp).
+
+Les raccourcis Linux utilisent aussi la lecture bornée : un fichier illisible ou trop volumineux ne peut plus être traité comme un exécutable ordinaire. Un test couvre ce cas même en présence de fichiers de moteur de jeu.
