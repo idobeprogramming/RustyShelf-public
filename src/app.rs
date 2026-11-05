@@ -797,7 +797,7 @@ impl RustyShelfApp {
             .and_then(|style| style.muted)
             .unwrap_or(theme_muted_text(self.theme));
         let mut consoles = std::collections::BTreeMap::<String, usize>::new();
-        for game in &self.games {
+        for game in self.games.iter().filter(|game| game.confirmed) {
             if let Some(console) = self.game_console(game) {
                 *consoles.entry(console.to_owned()).or_default() += 1;
             }
@@ -859,7 +859,10 @@ impl RustyShelfApp {
                                 "Favoris",
                                 "Favorites",
                                 "★",
-                                self.games.iter().filter(|game| game.favorite).count(),
+                                self.games
+                                    .iter()
+                                    .filter(|game| game.confirmed && game.favorite)
+                                    .count(),
                             ),
                             (
                                 "Installés",
@@ -1385,6 +1388,11 @@ impl RustyShelfApp {
         });
     }
     fn matches_category(&self, game: &Game) -> bool {
+        // Discovery candidates belong exclusively to the review queue, including
+        // old extension-only ROM detections already stored in the library.
+        if !game.confirmed {
+            return self.selected_category == "À confirmer";
+        }
         let source = match self.selected_category.as_str() {
             "Steam" => Some(Launcher::Steam),
             "Epic Games" => Some(Launcher::Epic),
@@ -1446,23 +1454,17 @@ impl RustyShelfApp {
         };
         ui.label(RichText::new(category).color(Color32::GRAY));
         ui.add_space(10.0);
-        if !game.confirmed
-            && ui
-                .button(tr(
-                    self.language,
-                    "Ce n’est pas un jeu · Ignorer",
-                    "Not a game · Ignore",
-                ))
-                .clicked()
+        if ui
+            .button(tr(
+                self.language,
+                "Ce n’est pas un jeu · Ignorer",
+                "Not a game · Ignore",
+            ))
+            .clicked()
         {
-            if let Some(store) = &self.store {
-                match store.ignore_game(&game.id) {
-                    Ok(()) => {
-                        self.games.retain(|item| item.id != game.id);
-                        self.selected_game = None;
-                    }
-                    Err(error) => self.status = error.to_string(),
-                }
+            if self.persist(|store| store.ignore_game(&game.id)) {
+                self.games.retain(|item| item.id != game.id);
+                self.selected_game = None;
             }
             return;
         }
@@ -2315,6 +2317,39 @@ mod tests {
         assert!(!app.update_library(|store| store.set_preference("test", "saved")));
         assert_eq!(app.games.len(), 1);
         assert!(app.status.contains("rechargement impossible"));
+    }
+
+    #[test]
+    fn unconfirmed_roms_only_appear_in_review_and_confirmed_items_can_be_ignored() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = test_app();
+        let mut game = app.games[0].clone();
+        game.confirmed = false;
+        game.favorite = true;
+        for category in [
+            "Tous les jeux",
+            "Favoris",
+            "ROMs",
+            "console:NES",
+            "Ajout manuel",
+        ] {
+            app.selected_category = category.into();
+            assert!(!app.matches_category(&game), "{category}");
+        }
+        app.selected_category = "À confirmer".into();
+        assert!(app.matches_category(&game));
+        game.confirmed = true;
+        app.selected_category = "console:NES".into();
+        assert!(app.matches_category(&game));
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        store.save_game(&game).unwrap();
+        app.store = Some(store);
+        assert!(app.update_library(|store| store.ignore_game(&game.id)));
+        assert!(app.games.is_empty());
+        assert!(app.update_library(|store| store.save_game(&game)));
+        assert!(app.games.is_empty());
+        assert!(app.update_library(|store| store.restore_ignored_games()));
+        assert_eq!(app.games.len(), 1);
     }
 
     #[test]

@@ -75,14 +75,64 @@ pub fn console(path: &Path) -> Option<&'static str> {
 }
 
 fn has_sega_header(path: &Path) -> bool {
+    has_signature(path, 0x100, b"SEGA")
+}
+
+fn has_signature(path: &Path, offset: u64, expected: &[u8]) -> bool {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut file) = std::fs::File::open(path) else {
         return false;
     };
-    let mut signature = [0; 4];
-    file.seek(SeekFrom::Start(0x100)).is_ok()
+    let mut signature = vec![0; expected.len()];
+    file.seek(SeekFrom::Start(offset)).is_ok()
         && file.read_exact(&mut signature).is_ok()
-        && &signature == b"SEGA"
+        && signature == expected
+}
+
+/// Discovery is stricter than classification of an already accepted/offline game.
+/// In particular, .cso shaders, .gen generated files and .mdf databases are common.
+pub fn scan_candidate(path: &Path) -> bool {
+    let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
+        return false;
+    };
+    match extension.to_ascii_lowercase().as_str() {
+        "gen" | "md" => has_sega_header(path),
+        "cso" => has_signature(path, 0, b"CISO"),
+        "chd" => has_signature(path, 0, b"MComprHD"),
+        "pbp" => has_signature(path, 0, b"\0PBP"),
+        "mdf" => {
+            in_rom_folder(path)
+                && (path.with_extension("mds").is_file() || path.with_extension("MDS").is_file())
+        }
+        // These formats lack the checks above: require an explicit ROM collection.
+        "smd" | "cdi" | "nrg" | "cue" => in_rom_folder(path),
+        "iso" => in_rom_folder(path),
+        _ => console(path).is_some(),
+    }
+}
+
+fn in_rom_folder(path: &Path) -> bool {
+    path.ancestors().skip(1).any(|folder| {
+        folder.file_name().is_some_and(|name| {
+            let name = name.to_string_lossy().to_lowercase();
+            [
+                "rom",
+                "roms",
+                "iso",
+                "isos",
+                "emulation",
+                "émulation",
+                "ps1",
+                "ps2",
+                "ps3",
+                "psp",
+            ]
+            .contains(&name.as_str())
+                || CONSOLES
+                    .iter()
+                    .any(|console| console.to_lowercase() == name)
+        })
+    })
 }
 
 pub fn is_image(path: &Path) -> bool {
@@ -103,6 +153,26 @@ pub fn assignable_console(console: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ambiguous_formats_require_rom_context_and_mdf_requires_a_descriptor() {
+        let temp = tempfile::tempdir().unwrap();
+        let roms = temp.path().join("roms");
+        let apps = temp.path().join("Apps");
+        std::fs::create_dir(&roms).unwrap();
+        std::fs::create_dir(&apps).unwrap();
+        for folder in [&roms, &apps] {
+            std::fs::write(folder.join("Database.mdf"), b"data").unwrap();
+            assert!(!scan_candidate(&folder.join("Database.mdf")));
+            std::fs::write(folder.join("Database.mds"), b"descriptor").unwrap();
+        }
+        assert!(scan_candidate(&roms.join("Database.mdf")));
+        assert!(!scan_candidate(&apps.join("Database.mdf")));
+        assert!(!scan_candidate(&apps.join("generated.smd")));
+        assert!(scan_candidate(&roms.join("Adventure.smd")));
+        assert!(!scan_candidate(&temp.path().join("Games/Setup.iso")));
+        assert!(scan_candidate(&roms.join("Adventure.iso")));
+    }
 
     #[test]
     fn classifies_roms_without_guessing_ambiguous_discs() {

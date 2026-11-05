@@ -17,9 +17,9 @@ RustyShelf est une bibliothèque de jeux de bureau écrite en Rust. Elle rassemb
 - **Rapport du scan** : les chemins protégés ou indisponibles sont comptés séparément des erreurs de lecture et de sauvegarde. Le dernier rapport est conservé et exportable depuis les options ; son détail est limité à 50 messages de chaque type, avec les compteurs complets.
 - **Sauvegarder et exporter** : les options permettent une copie SQLite de la bibliothèque complète (favoris, réglages, exclusions et choix d’émulateur) et un export JSON du catalogue. Les jaquettes et fichiers de jeu restent à leur emplacement ; ils ne sont pas copiés dans la sauvegarde.
 
-La bibliothèque principale affiche les jeux reconnus et confirmés. Les exécutables autonomes doivent présenter des fichiers de jeu (Unity, Unreal, Godot, GameMaker, Ren’Py ou RPG Maker) pour être proposés dans **À confirmer**. Les raccourcis Linux doivent porter la catégorie `Game`. Les anciens résultats incertains restent dans cette section. Le bouton **Ce n’est pas un jeu · Ignorer** masque durablement un candidat ; les options permettent de réafficher les candidats ignorés.
+La bibliothèque principale affiche les jeux reconnus et confirmés. Les exécutables autonomes doivent présenter des fichiers de jeu (Unity, Unreal, Godot, GameMaker, Ren’Py ou RPG Maker) pour être proposés dans **À confirmer**. Les raccourcis Linux doivent porter la catégorie `Game`. Les anciens résultats incertains restent dans cette section. Le bouton **Ce n’est pas un jeu · Ignorer** masque durablement un élément, même déjà confirmé, sans supprimer ses fichiers ; les options permettent de réafficher les candidats ignorés.
 
-Pour éviter les images d’installation système, les fichiers ISO doivent se trouver dans un dossier de jeux/ROMs ou une console reconnue. Ils restent à confirmer avant de rejoindre la bibliothèque principale. Les ROMs apparaissent immédiatement dans leur vue console avec leur état à confirmer. Les archives ZIP/7z et les fichiers BIN génériques ne sont pas importés automatiquement. Les fichiers `.md` de Mega Drive demandent une signature SEGA afin de ne pas confondre les documents Markdown avec des jeux.
+Pour éviter les images d’installation système, les fichiers ISO doivent se trouver dans un dossier ROMs, ISO, émulation ou une console reconnue. Ils restent à confirmer avant de rejoindre la bibliothèque principale. Les ROMs détectées restent uniquement dans « À confirmer » avant de rejoindre les vues ROMs et consoles. Les anciens candidats suivent aussi cette règle. Les archives ZIP/7z et les fichiers BIN génériques ne sont pas importés automatiquement. Les fichiers `.md` et `.gen` demandent une signature SEGA. Les CSO, CHD et PBP sont contrôlés par leur signature. Les MDF demandent un dossier ROMs et un fichier MDS associé. Les SMD, CUE, CDI et NRG demandent aussi un dossier ROMs/console. Ces contrôles réduisent les faux positifs sans certifier qu’un fichier est un jeu complet. L’ajout manuel reste disponible pour les formats inhabituels.
 
 Les noms et manifestes des lanceurs varient selon leur version. Les jeux autonomes sans signature reconnue peuvent être ajoutés avec le bouton **＋ Jeu**. RustyShelf ne télécharge pas de jaquettes et ne contacte aucun service distant.
 
@@ -61,3 +61,5 @@ cargo clippy --all-targets -- -D warnings
 ```
 
 Voir [TASKS.md](TASKS.md) pour le découpage en tâches de Luna.
+
+Les options disposent d’une croix de fermeture. Leur liste de disques occupe toute la largeur et affiche le chemin séparément des détails.

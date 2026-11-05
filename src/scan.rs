@@ -342,32 +342,7 @@ fn desktop_value(contents: &str, key: &str) -> Option<String> {
 
 fn candidate_from_disc_image(path: &Path) -> Option<Game> {
     let title = path.file_stem()?.to_string_lossy().trim().to_string();
-    if title.is_empty() {
-        return None;
-    }
-    // ISO is also used by operating systems and backup tools. Require a game folder.
-    if path
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("iso"))
-        && !path.ancestors().skip(1).any(|folder| {
-            folder.file_name().is_some_and(|name| {
-                matches!(
-                    name.to_string_lossy().to_lowercase().as_str(),
-                    "games"
-                        | "jeux"
-                        | "roms"
-                        | "isos"
-                        | "emulation"
-                        | "ps1"
-                        | "ps2"
-                        | "ps3"
-                        | "psp"
-                        | "wii"
-                        | "gamecube"
-                )
-            })
-        })
-    {
+    if title.is_empty() || !crate::rom::scan_candidate(path) {
         return None;
     }
     Some(Game::from_installation(
@@ -441,6 +416,42 @@ mod tests {
     use super::*;
     use std::{fs, sync::mpsc};
     use tempfile::tempdir;
+
+    #[test]
+    fn rejects_shader_database_and_generated_files_even_in_rom_folders() {
+        let temp = tempdir().unwrap();
+        let roms = temp.path().join("roms");
+        fs::create_dir(&roms).unwrap();
+        for (name, bytes) in [
+            ("D3D9Overlay.cso", b"DXBC compiled shader".as_slice()),
+            ("Database.mdf", b"database content".as_slice()),
+            (
+                "7792D9CE-355A-493C-AFBD.gen",
+                b"generated content".as_slice(),
+            ),
+            ("broken.chd", b"not an image".as_slice()),
+        ] {
+            fs::write(roms.join(name), bytes).unwrap();
+        }
+        // Keep actual container signatures regardless of the title chosen by the user.
+        fs::write(roms.join("Database.cso"), b"CISO\0\0\0\0").unwrap();
+        let mut sega = vec![0u8; 0x200];
+        sega[0x100..0x104].copy_from_slice(b"SEGA");
+        fs::write(roms.join("Adventure.gen"), sega).unwrap();
+        let mut titles = Vec::new();
+        scan_roots(
+            &[temp.path().to_owned()],
+            &[],
+            &ScanControl::default(),
+            |event| {
+                if let ScanEvent::Candidate(game) = event {
+                    titles.push(game.title);
+                }
+            },
+        );
+        titles.sort();
+        assert_eq!(titles, ["Adventure", "Database"]);
+    }
 
     #[test]
     fn linux_removable_volumes_remain_scannable_without_entering_runtime_dirs() {
