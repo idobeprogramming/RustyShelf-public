@@ -16,7 +16,7 @@
 
 ## Vérification et limites
 
-44 tests Rust passent sous Windows, ainsi que le formatage et Clippy. Les nouveaux tests de régression utilisent des données temporaires et des commandes fictives ; aucun jeu réel n’est lancé.
+59 tests Rust passent sous Windows, ainsi que le formatage et Clippy. Les nouveaux tests de régression utilisent des données temporaires et des commandes fictives ; aucun jeu réel n’est lancé.
 
 La détection autonome reste une heuristique : les moteurs inconnus et jeux sans fichiers reconnaissables nécessitent l’ajout manuel. Une application utilisant un moteur de jeu peut encore être proposée à confirmation. Les formats de configuration des lanceurs peuvent évoluer.
 
@@ -62,4 +62,21 @@ Corrections vérifiées le 5 novembre 2026 :
 
 Les tests simulent notamment un refus d’écriture SQLite, un catalogue devenu illisible après une écriture, une interruption brutale du scan et deux lanceurs partageant le même dossier. Le formatage, les 44 tests et Clippy passent. Le disque de développement X: produit encore un avertissement de cache de compilation sans liens physiques ; Rust utilise la copie de fichiers à la place.
 
-Limites encore présentes dans les adaptateurs : certaines erreurs de lecture de manifestes sont ignorées, la lecture Lutris couvre un sous-ensemble de YAML, et GOG repose encore sur une recherche heuristique des exécutables. La découverte initiale des lanceurs n’est pas annulable au milieu d’une lecture. Cette revue ne constitue pas une validation graphique Windows/CachyOS ni un essai sur tous les disques réels.
+Limites encore présentes dans les adaptateurs : la lecture Lutris couvre un sous-ensemble de YAML et certains formats de lanceurs ne sont pas reconnus. Les lectures système en cours ne peuvent pas être interrompues immédiatement. Cette revue ne constitue pas une validation graphique Windows/CachyOS ni un essai sur tous les disques réels.
+
+
+## Scanner : corrections et revue finale
+
+- Les extensions ambiguës `.gen`, `.md`, `.cso`, `.chd` et `.pbp` demandent une signature de contenu ; MDF demande un fichier MDS associé dans une collection de ROMs. Les formats SMD/CUE/CDI/NRG et ISO demandent un contexte ROMs/console. Les tests couvrent des shaders, bases de données et fichiers générés sans supprimer de fichiers réels.
+- Les anciens candidats non confirmés apparaissent exclusivement dans « À confirmer ». L’action Ignorer fonctionne aussi pour les jeux confirmés et reste réversible. Les favoris et sous-catégories n’exposent plus les candidats par accident.
+- Steam et GOG sont reconnus pendant le parcours général, y compris dans des dossiers personnalisés. Les erreurs de manifeste sont remontées, et les chemins relatifs sortant de la bibliothèque sont rejetés.
+- GOG lit le titre et la tâche principale du manifeste, conserve les arguments entre guillemets et le répertoire de travail. Il ne choisit plus un exécutable auxiliaire. Sur Linux, un exécutable Windows seul ne crée pas de profil direct : les profils Heroic/Lutris configurés restent nécessaires.
+- La découverte des lanceurs vérifie l’annulation entre les fichiers et les phases, avec progression. Les lectures de manifestes sont bornées à 4 Mo. Les racines imbriquées ne sont parcourues qu’une fois.
+- La reconnaissance d’un titre officiel réutilise une installation déjà enregistrée et conserve favoris/catégories. Sous Windows, une différence de casse ou de séparateur ne crée plus une seconde installation. Sous Linux, la comparaison conserve la distinction de casse.
+- Les configurations Lutris incomplètes ne deviennent plus des jeux partageant tous le dossier de configuration.
+- Nouveau scan limité à un dossier, testé de bout en bout avec le canal de progression et une base temporaire. Il conserve les jeux situés hors de son périmètre.
+- Options : croix testée par clic simulé, réouverture vérifiée, largeur minimale adaptée à la fenêtre et lignes de disques sur toute la largeur.
+
+Validation : 59 tests passent, formatage et Clippy passent. Aucun jeu réel n’a été lancé et aucune nouvelle dépendance n’a été ajoutée. Les tests couvrent les profils GOG, les manifestes Steam compacts/invalides, les lectures trop volumineuses, l’annulation, les faux positifs et la conservation des corrections. La signature d’un conteneur n’est pas une validation intégrale de son contenu ; les résultats incertains nécessitent toujours une confirmation. Les catalogues réels complets et CachyOS restent à vérifier sur les machines cibles.
+
+Références de format utilisées pendant le développement (aucun accès réseau dans l’application) : [tâches GOG documentées par Heroic](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/wiki/How-To%3A-DOSBOX-and-SCUMMVM), [signatures de conteneurs utilisées par PPSSPP](https://github.com/hrydgard/ppsspp/blob/master/Core/FileSystems/BlockDevices.cpp).

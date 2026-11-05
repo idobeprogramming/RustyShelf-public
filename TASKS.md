@@ -39,4 +39,11 @@ Une tâche à la fois : comprendre, modifier, vérifier les critères, puis cré
 35. [x] Séparer les anciens groupes d’images et préserver leurs corrections.
 36. [x] Distinguer chemins non analysés et erreurs réelles, conserver et exporter le rapport.
 
+37. [x] Ajouter la croix des options et élargir la liste des disques.
+38. [x] Filtrer les extensions ROM ambiguës et isoler tous les candidats à confirmer.
+39. [x] Détecter les manifestes Steam/GOG dans les dossiers personnalisés.
+40. [x] Annuler la découverte des lanceurs, borner les lectures et rapporter les erreurs.
+41. [x] Ajouter le scan ciblé d’un dossier et préserver les autres installations.
+42. [x] Revoir les identités Windows et les profils Lutris incomplets.
+
 Critères : formatage, tests concernés, `cargo test`, Clippy sans avertissement. Chaque lot autonome produit un commit séparé. Le pipeline CI exécute ces contrôles et construit les deux paquets à chaque push ou pull request.

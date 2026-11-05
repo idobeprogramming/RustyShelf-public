@@ -5,10 +5,11 @@ RustyShelf est une bibliothèque de jeux de bureau écrite en Rust. Elle rassemb
 ## Utilisation
 
 - **Scanner les disques** : choisir les volumes et les dossiers à exclure dans les paramètres. Le scan affiche sa progression, peut être annulé et conserve les jeux d’un disque débranché. Les exécutables détectés sont affichés dans « À confirmer » lorsqu’aucun lanceur ne permet de reconnaître leur titre.
-- **Sources reconnues** : manifestes Steam, Epic Games, Heroic et Lutris, ainsi que les dossiers de jeux GOG.
+- **Sources reconnues** : manifestes Steam, Epic Games, Heroic, profils Lutris et manifestes GOG `goggame-*.info`. Le parcours des disques reconnaît aussi Steam et GOG dans les dossiers personnalisés. GOG utilise la tâche principale de son manifeste, jamais le premier exécutable trouvé.
+- **Scanner un dossier** : dans les options, choisir **Scanner un dossier…**. Seul son contenu est parcouru (y compris les manifestes Steam/GOG présents), sans recherche dans les catalogues des autres lanceurs. Les jeux hors de ce dossier restent inchangés.
 - **Organiser** : rechercher, filtrer par source, modifier une catégorie, marquer un favori, ajouter un jeu et choisir une image locale.
 - **Lancer** : utiliser le lien Steam, Heroic ou Lutris disponible, ou lancer directement le chemin enregistré. Sous Linux, Proton/Wine doit déjà être configuré dans le lanceur.
-- **Images disque** : les fichiers ISO, CHD, CSO, WBFS, GCZ, CUE, PBP, CDI, NRG et MDF sont proposés dans **Images à classer**. Choisir la catégorie de chaque image depuis sa fiche, puis ouvrir cette catégorie pour lui associer un émulateur. RustyShelf transmet le chemin de l’image à cet émulateur, qui doit être installé et compatible avec le format.
+- **Images disque** : les fichiers ISO, CHD, CSO, WBFS, GCZ, CUE, PBP, CDI, NRG et MDF sont proposés dans **À confirmer**, puis dans **Images à classer** après confirmation. Choisir la catégorie de chaque image depuis sa fiche, puis ouvrir cette catégorie pour lui associer un émulateur. RustyShelf transmet le chemin de l’image à cet émulateur, qui doit être installé et compatible avec le format.
 - **Personnaliser** : options de langue français/anglais et thèmes Nocturne, Aurore, Rétro, Horizon, Brise et Prisme. Le thème Prisme dessine des panneaux translucides dans l’application.
 - **Style CSS** : importer un fichier local dans les options, activer/désactiver les variables puis recharger après modification. Un modèle est fourni dans le paquet et peut être enregistré depuis l’application. Voir [CUSTOM_STYLE.md](CUSTOM_STYLE.md) pour la syntaxe prise en charge.
 - **ROMs et consoles** : la section ROMs se construit à partir de la bibliothèque. Les extensions de cartouches comme NES, SFC, GBA ou N64 permettent un classement direct. Les images disque restent dans **Images à classer** jusqu’au choix manuel de leur catégorie. Le nom du dossier et l’ancienne catégorie automatique ne déterminent plus leur console. Les choix manuels sont conservés après les scans.
@@ -63,3 +64,5 @@ cargo clippy --all-targets -- -D warnings
 Voir [TASKS.md](TASKS.md) pour le découpage en tâches de Luna.
 
 Les options disposent d’une croix de fermeture. Leur liste de disques occupe toute la largeur et affiche le chemin séparément des détails.
+
+Le scan évite de parcourir deux fois des racines imbriquées. L’annulation est vérifiée entre les fichiers, y compris pendant la découverte des lanceurs ; une lecture système en cours doit toutefois se terminer. Les manifestes lus sont limités à 4 Mo et leurs erreurs sont intégrées au rapport. Les profils Lutris sans exécutable local résolu sont signalés comme non analysés.
