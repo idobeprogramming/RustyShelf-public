@@ -22,6 +22,11 @@ Une tâche à la fois : comprendre, modifier, vérifier les critères, puis cré
 18. [x] Lancement direct et liens Steam sous Windows/Linux.
 19. [x] Délégation aux lanceurs Linux Heroic et Lutris.
 20. [x] Options, exclusions et états de disponibilité.
-21. [x] Scripts de paquet Windows/Linux, fichier `.desktop`, guide CachyOS et CI multiplateforme. Validation graphique réelle CachyOS à faire sur une machine Linux.
+21. [x] Scripts de paquet Windows/Linux, fichier `.desktop`, guide CachyOS et CI multiplateforme.
+22. [x] Limiter l'utilisation mémoire du scan, traiter les erreurs par accès refusé et conserver les candidats à confirmer.
+23. [x] Ajouter les options de langue française/anglaise et les thèmes sombre, clair, Vista et Liquid Glass.
+24. [x] Détecter les images disque et choisir un émulateur par défaut ou par jeu.
+25. [x] Construire les paquets Windows/Linux et les joindre aux exécutions du pipeline CI.
+26. [ ] Vérifier graphiquement sur une vraie session CachyOS Wayland et X11.
 
-Critères : formatage, tests concernés, `cargo test`, Clippy sans avertissement. Chaque étape produit un commit séparé.
+Critères : formatage, tests concernés, `cargo test`, Clippy sans avertissement. Chaque lot autonome produit un commit séparé. Le pipeline CI exécute ces contrôles et construit les deux paquets à chaque push ou pull request.

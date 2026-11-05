@@ -4,10 +4,12 @@ GameShelf est une bibliothèque de jeux de bureau écrite en Rust. Elle rassembl
 
 ## Utilisation
 
-- **Scanner les disques** : choisir les volumes et les dossiers à exclure dans les paramètres. Le scan affiche sa progression, peut être annulé et conserve les jeux d’un disque débranché.
-- **Sources reconnues** : manifestes Steam, Epic Games, Heroic et Lutris, ainsi que les dossiers de jeux GOG. Les exécutables inconnus sont marqués « À confirmer ».
+- **Scanner les disques** : choisir les volumes et les dossiers à exclure dans les paramètres. Le scan affiche sa progression, peut être annulé et conserve les jeux d’un disque débranché. Les exécutables détectés sont affichés dans « À confirmer » lorsqu’aucun lanceur ne permet de reconnaître leur titre.
+- **Sources reconnues** : manifestes Steam, Epic Games, Heroic et Lutris, ainsi que les dossiers de jeux GOG.
 - **Organiser** : rechercher, filtrer par source, modifier une catégorie, marquer un favori, ajouter un jeu et choisir une image locale.
 - **Lancer** : utiliser le lien Steam, Heroic ou Lutris disponible, ou lancer directement le chemin enregistré. Sous Linux, Proton/Wine doit déjà être configuré dans le lanceur.
+- **Images disque** : les fichiers ISO, CHD, CSO, WBFS, GCZ, CUE, PBP, CDI, NRG et MDF apparaissent dans la file « À confirmer ». Choisir un émulateur par défaut dans les options ou un émulateur propre à chaque jeu, puis le lancer depuis sa fiche. GameShelf transmet le chemin de l’image à l’émulateur ; celui-ci doit être installé et compatible avec le format.
+- **Personnaliser** : options de langue français/anglais et thèmes sombre, clair, Windows Vista et Liquid Glass. Le thème Liquid Glass dessine des panneaux translucides dans l’application.
 
 Les noms et manifestes des lanceurs varient selon leur version. Les jeux autonomes non détectés peuvent être ajoutés avec le bouton **＋ Jeu**. GameShelf ne télécharge pas de jaquettes et ne contacte aucun service distant.
 
@@ -19,7 +21,7 @@ Installer Rust stable et les outils de compilation C++ de Visual Studio, puis :
 cargo run
 ```
 
-Pour créer une archive de distribution, exécuter `.uild-windows.ps1`.
+Pour créer une archive de distribution, exécuter `.\build-windows.ps1`.
 
 ## CachyOS et autres distributions Linux
 
@@ -32,7 +34,7 @@ cargo run
 
 Pour créer l’archive Linux : `bash build-linux.sh`. Extraire `dist/GameShelf-linux-x86_64.tar.gz`, puis lancer `./gameshelf`. Le fichier `gameshelf.desktop` peut être copié vers `~/.local/share/applications/` après avoir installé l’exécutable dans un dossier présent dans le `PATH`.
 
-Les bibliothèques graphiques fournies par la distribution restent nécessaires. La compilation Windows est vérifiée dans CI ; pour la prise en charge de CachyOS, compiler et vérifier l’interface sur une machine CachyOS avec session Wayland ou X11.
+Les bibliothèques graphiques fournies par la distribution restent nécessaires. Le pipeline CI vérifie formatage, tests et Clippy, puis produit des archives Windows et Linux à chaque changement poussé ou proposition de fusion. Elles sont téléchargeables comme artefacts de l’exécution CI. Pour valider CachyOS graphiquement, compiler et ouvrir l’application sur une machine CachyOS en session Wayland ou X11.
 
 ## Données
 

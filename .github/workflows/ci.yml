@@ -3,6 +3,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   windows:
     runs-on: windows-latest
@@ -11,10 +14,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo test
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo build --release
+      - run: .\build-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GameShelf-windows-x86_64
+          path: dist/GameShelf-windows-x86_64.zip
+          if-no-files-found: error
   linux:
     runs-on: ubuntu-24.04
     steps:
@@ -22,8 +31,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxrandr-dev libxcursor-dev libxinerama-dev libdbus-1-dev libgtk-3-dev libglib2.0-dev
       - run: cargo fmt --check
       - run: cargo test
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo build --release
+      - run: bash build-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GameShelf-linux-x86_64
+          path: dist/GameShelf-linux-x86_64.tar.gz
+          if-no-files-found: error
