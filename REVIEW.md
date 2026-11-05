@@ -16,7 +16,7 @@
 
 ## Vérification et limites
 
-37 tests Rust passent sous Windows, ainsi que le formatage et Clippy. Les tests utilisent des données temporaires et des commandes fictives ; aucun jeu réel n’est lancé.
+44 tests Rust passent sous Windows, ainsi que le formatage et Clippy. Les nouveaux tests de régression utilisent des données temporaires et des commandes fictives ; aucun jeu réel n’est lancé.
 
 La détection autonome reste une heuristique : les moteurs inconnus et jeux sans fichiers reconnaissables nécessitent l’ajout manuel. Une application utilisant un moteur de jeu peut encore être proposée à confirmation. Les formats de configuration des lanceurs peuvent évoluer.
 
@@ -48,3 +48,18 @@ Les dossiers ne sont plus utilisés pour deviner la console d’une image disque
 Les accès refusés et chemins devenus indisponibles sont signalés comme non analysés, séparément des erreurs de stockage ou de lecture. Le dernier rapport est enregistré en base et exportable. Les listes de détails sont bornées, et les compteurs restent exacts. Un test d’interface contrôle également l’absence de messages de collision d’identifiants egui dans les vues testées.
 
 L’application était fermée lors de l’inspection des fenêtres : les messages exacts de la session signalée n’ont pas été observés. Les corrections ci-dessus ont été validées sur des cas reproductibles et des données temporaires ; un message persistant pourra être analysé grâce au rapport exporté.
+
+## Revue de fiabilité complémentaire
+
+Corrections vérifiées le 5 novembre 2026 :
+
+- **Vignettes personnalisées** : un résultat de découverte ne remplace plus une vignette déjà enregistrée, même lorsque son disque est débranché. Le remplacement explicite reste possible.
+- **Échecs d’écriture** : les favoris, confirmations, catégories, vignettes, exclusions et associations de consoles/émulateurs ne sont plus modifiés silencieusement si leur enregistrement échoue. Langue et thème reviennent au choix précédent en cas d’échec. Un rechargement impossible conserve la dernière bibliothèque affichée.
+- **Scan interrompu** : un canal de scan fermé sans événement de fin ne laisse plus l’interface en analyse permanente. L’annulation recharge les résultats enregistrés et leurs corrections sans marquer les jeux non parcourus comme absents. Fermer l’application transmet aussi une demande d’arrêt.
+- **Sources multiples** : les dossiers déjà reconnus servent uniquement à éviter le scan générique des exécutables. Ils ne masquent plus les résultats d’un autre lanceur ; seules les exclusions utilisateur et les volumes sélectionnés filtrent ces résultats.
+- **Disques Linux** : `/run/media` reste accessible au scanner, tandis que les autres sous-dossiers d’exécution de `/run` restent exclus. La règle est testée sous Windows avec des chemins Linux ; la validation sur CachyOS reste nécessaire.
+- **Raccourcis Linux** : seules les propriétés de `[Desktop Entry]` déterminent le titre, la catégorie et la commande. Une section d’action secondaire ne peut plus fournir une commande manquante.
+
+Les tests simulent notamment un refus d’écriture SQLite, un catalogue devenu illisible après une écriture, une interruption brutale du scan et deux lanceurs partageant le même dossier. Le formatage, les 44 tests et Clippy passent. Le disque de développement X: produit encore un avertissement de cache de compilation sans liens physiques ; Rust utilise la copie de fichiers à la place.
+
+Limites encore présentes dans les adaptateurs : certaines erreurs de lecture de manifestes sont ignorées, la lecture Lutris couvre un sous-ensemble de YAML, et GOG repose encore sur une recherche heuristique des exécutables. La découverte initiale des lanceurs n’est pas annulable au milieu d’une lecture. Cette revue ne constitue pas une validation graphique Windows/CachyOS ni un essai sur tous les disques réels.
