@@ -34,6 +34,7 @@ impl Store {
                path TEXT NOT NULL, launcher TEXT NOT NULL, profile TEXT,
                available INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(game_id, path)
              );
+             CREATE INDEX IF NOT EXISTS installations_path ON installations(path);
              CREATE TABLE IF NOT EXISTS excluded_paths (path TEXT PRIMARY KEY);
              CREATE TABLE IF NOT EXISTS ignored_games (game_id TEXT PRIMARY KEY);
              CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -41,6 +42,8 @@ impl Store {
              CREATE TABLE IF NOT EXISTS game_emulators (game_id TEXT PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE, emulator_id TEXT NOT NULL REFERENCES emulators(id) ON DELETE CASCADE);
              CREATE TABLE IF NOT EXISTS categories (name TEXT PRIMARY KEY);",
         )?;
+        #[cfg(windows)]
+        connection.execute_batch("CREATE INDEX IF NOT EXISTS installations_path_windows ON installations(REPLACE(path,char(92),'/') COLLATE NOCASE);")?;
         let store = Self { connection };
         store.merge_legacy_duplicates()?;
         store.split_legacy_image_groups()?;
@@ -264,32 +267,41 @@ impl Store {
     }
 
     pub fn games(&self) -> rusqlite::Result<Vec<Game>> {
-        let mut statement = self.connection.prepare("SELECT id,title,category,favorite,confirmed,cover_path FROM games WHERE NOT EXISTS (SELECT 1 FROM ignored_games WHERE game_id=games.id) ORDER BY title COLLATE NOCASE")?;
-        let rows = statement.query_map([], |row| {
-            let cover: Option<String> = row.get(5)?;
-            Ok(Game {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                category: row.get(2)?,
-                favorite: row.get(3)?,
-                confirmed: row.get(4)?,
-                cover_path: cover.map(PathBuf::from),
-                installations: Vec::new(),
-            })
-        })?;
-        let mut games: Vec<Game> = rows.collect::<rusqlite::Result<_>>()?;
-        for game in &mut games {
-            let mut stmt = self.connection.prepare("SELECT path,launcher,profile,available FROM installations WHERE game_id=?1 ORDER BY path")?;
-            let rows = stmt.query_map([&game.id], |row| {
-                let profile: Option<String> = row.get(2)?;
-                Ok(Installation {
-                    path: PathBuf::from(row.get::<_, String>(0)?),
-                    launcher: parse_launcher(&row.get::<_, String>(1)?),
+        // One ordered join replaces one query per game. LEFT JOIN retains games
+        // without an installation (for example after importing an older library).
+        let mut statement = self.connection.prepare(
+            "SELECT g.id,g.title,g.category,g.favorite,g.confirmed,g.cover_path,
+                    i.path,i.launcher,i.profile,i.available
+             FROM games g LEFT JOIN installations i ON i.game_id=g.id
+             WHERE NOT EXISTS (SELECT 1 FROM ignored_games WHERE game_id=g.id)
+             ORDER BY g.title COLLATE NOCASE,g.id,i.path",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut games: Vec<Game> = Vec::new();
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            if games.last().is_none_or(|game| game.id != id) {
+                let cover: Option<String> = row.get(5)?;
+                games.push(Game {
+                    id,
+                    title: row.get(1)?,
+                    category: row.get(2)?,
+                    favorite: row.get(3)?,
+                    confirmed: row.get(4)?,
+                    cover_path: cover.map(PathBuf::from),
+                    installations: Vec::new(),
+                });
+            }
+            let path: Option<String> = row.get(6)?;
+            if let Some(path) = path {
+                let profile: Option<String> = row.get(8)?;
+                games.last_mut().unwrap().installations.push(Installation {
+                    path: path.into(),
+                    launcher: parse_launcher(&row.get::<_, String>(7)?),
                     launch_profile: profile.and_then(|json| serde_json::from_str(&json).ok()),
-                    available: row.get(3)?,
-                })
-            })?;
-            game.installations = rows.collect::<rusqlite::Result<_>>()?;
+                    available: row.get(9)?,
+                });
+            }
         }
         Ok(games)
     }
@@ -379,12 +391,13 @@ impl Store {
     ) -> rusqlite::Result<()> {
         let tx = self.connection.unchecked_transaction()?;
         let paths = {
-            let mut query = tx.prepare("SELECT path FROM installations")?;
+            let mut query = tx.prepare("SELECT DISTINCT path FROM installations")?;
             let paths = query
                 .query_map([], |row| row.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             paths
         };
+        let seen_paths: std::collections::HashSet<_> = seen_paths.iter().collect();
         for value in paths {
             let path = PathBuf::from(value);
             if roots
@@ -432,6 +445,45 @@ fn parse_launcher(value: &str) -> Launcher {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn large_library_keeps_installations_and_ignored_games_consistent() {
+        let temp = tempdir().unwrap();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        store.connection.execute_batch("BEGIN;
+            WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<3000)
+            INSERT INTO games(id,title,category) SELECT CAST(x AS TEXT),'Game '||x,'Test' FROM n;
+            INSERT INTO installations(game_id,path,launcher,available) SELECT id,'/games/'||id,'manual',1 FROM games;
+            INSERT INTO installations(game_id,path,launcher,available) SELECT id,'/backup/'||id,'manual',0 FROM games;
+            INSERT INTO ignored_games(game_id) VALUES('10');
+            INSERT INTO games(id,title,category) VALUES('empty','No installation','Test');
+            COMMIT;").unwrap();
+        let mut durations = Vec::new();
+        for _ in 0..5 {
+            let start = std::time::Instant::now();
+            let games = store.games().unwrap();
+            durations.push(start.elapsed());
+            assert_eq!(games.len(), 3000);
+            assert!(!games.iter().any(|game| game.id == "10"));
+            assert!(games
+                .iter()
+                .find(|game| game.id == "empty")
+                .unwrap()
+                .installations
+                .is_empty());
+            assert!(games.iter().filter(|game| game.id != "empty").all(|game| {
+                game.installations.len() == 2
+                    && game.installations[0].path.starts_with("/backup")
+                    && !game.installations[0].available
+                    && game.installations[1].available
+            }));
+        }
+        durations.sort();
+        eprintln!(
+            "Catalogue 3000 jeux / 6000 installations : médiane {:?}",
+            durations[2]
+        );
+    }
 
     #[test]
     fn installation_identity_uses_platform_case_rules() {
