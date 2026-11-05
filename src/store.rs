@@ -315,8 +315,12 @@ impl Store {
         };
         for value in paths {
             let path = PathBuf::from(value);
-            if roots.iter().any(|root| path.starts_with(root))
-                && !exclusions.iter().any(|excluded| path.starts_with(excluded))
+            if roots
+                .iter()
+                .any(|root| crate::scan::path_is_within(&path, root))
+                && !exclusions
+                    .iter()
+                    .any(|excluded| crate::scan::path_is_within(&path, excluded))
             {
                 let available = seen_paths.contains(&path) || path.exists();
                 tx.execute(

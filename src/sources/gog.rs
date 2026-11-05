@@ -29,25 +29,31 @@ pub fn discover() -> Vec<Game> {
             else {
                 continue;
             };
-            let executable = WalkDir::new(&install)
-                .max_depth(3)
-                .follow_links(false)
-                .into_iter()
-                .filter_map(Result::ok)
-                .find(|entry| {
-                    if !entry.file_type().is_file() {
-                        return false;
-                    }
-                    let extension = entry
-                        .path()
-                        .extension()
-                        .and_then(|value| value.to_str())
-                        .unwrap_or("");
-                    extension.eq_ignore_ascii_case("exe")
-                        || extension.eq_ignore_ascii_case("sh")
-                        || extension.eq_ignore_ascii_case("x86_64")
-                })
-                .map(|entry| entry.path().to_path_buf());
+            let executable =
+                WalkDir::new(&install)
+                    .max_depth(3)
+                    .follow_links(false)
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .find(|entry| {
+                        if !entry.file_type().is_file() {
+                            return false;
+                        }
+                        if !entry.path().file_stem().is_some_and(|stem| {
+                            crate::scan::looks_like_game(&stem.to_string_lossy())
+                        }) {
+                            return false;
+                        }
+                        let extension = entry
+                            .path()
+                            .extension()
+                            .and_then(|value| value.to_str())
+                            .unwrap_or("");
+                        extension.eq_ignore_ascii_case("exe")
+                            || extension.eq_ignore_ascii_case("sh")
+                            || extension.eq_ignore_ascii_case("x86_64")
+                    })
+                    .map(|entry| entry.path().to_path_buf());
             let profile = executable.map(|command| LaunchProfile {
                 working_directory: command.parent().map(PathBuf::from),
                 command,

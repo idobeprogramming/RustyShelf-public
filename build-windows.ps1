@@ -6,6 +6,9 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     $env:Path = (Join-Path $env:CARGO_HOME 'bin') + ';' + $env:Path
 }
 cargo build --release
+if ($LASTEXITCODE -ne 0) {
+    throw 'La compilation a échoué. Aucun paquet ne sera créé.'
+}
 $stage = Join-Path $PSScriptRoot 'dist\GameShelf-windows-x86_64'
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 Copy-Item 'target\release\gameshelf.exe' $stage -Force

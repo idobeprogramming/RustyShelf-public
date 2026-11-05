@@ -11,7 +11,11 @@ GameShelf est une bibliothèque de jeux de bureau écrite en Rust. Elle rassembl
 - **Images disque** : les fichiers ISO, CHD, CSO, WBFS, GCZ, CUE, PBP, CDI, NRG et MDF apparaissent dans la file « À confirmer ». Choisir un émulateur par défaut dans les options ou un émulateur propre à chaque jeu, puis le lancer depuis sa fiche. GameShelf transmet le chemin de l’image à l’émulateur ; celui-ci doit être installé et compatible avec le format.
 - **Personnaliser** : options de langue français/anglais et thèmes sombre, clair, Windows 98, Windows XP, Windows Vista et Liquid Glass. Le thème Liquid Glass dessine des panneaux translucides dans l’application.
 
-Les noms et manifestes des lanceurs varient selon leur version. Les jeux autonomes non détectés peuvent être ajoutés avec le bouton **＋ Jeu**. GameShelf ne télécharge pas de jaquettes et ne contacte aucun service distant.
+La bibliothèque principale affiche les jeux reconnus et confirmés. Les exécutables autonomes doivent présenter des fichiers de jeu (Unity, Unreal, Godot, GameMaker, Ren’Py ou RPG Maker) pour être proposés dans **À confirmer**. Les raccourcis Linux doivent porter la catégorie `Game`. Les anciens résultats incertains restent dans cette section. Le bouton **Ce n’est pas un jeu · Ignorer** masque durablement un candidat ; les options permettent de réafficher les candidats ignorés.
+
+Pour éviter les images d’installation système, les fichiers ISO doivent se trouver dans un dossier nommé `Games`, `Jeux`, `ROMs`, `ISOs`, `Emulation`, `PS2`, `PSP`, `Wii` ou `GameCube`. Ils restent à confirmer avant de rejoindre la bibliothèque.
+
+Les noms et manifestes des lanceurs varient selon leur version. Les jeux autonomes sans signature reconnue peuvent être ajoutés avec le bouton **＋ Jeu**. GameShelf ne télécharge pas de jaquettes et ne contacte aucun service distant.
 
 ## Windows
 

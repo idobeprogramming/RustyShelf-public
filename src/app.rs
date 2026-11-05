@@ -196,7 +196,10 @@ pub struct GameShelfApp {
 
 impl GameShelfApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let store = Store::open_default().ok();
+        let (store, store_error) = match Store::open_default() {
+            Ok(store) => (Some(store), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
         let language = Language::parse(
             store
                 .as_ref()
@@ -240,8 +243,8 @@ impl GameShelfApp {
             .as_ref()
             .and_then(|s| s.exclusions().ok())
             .unwrap_or_default();
-        if store.is_none() {
-            status = "Base locale indisponible".into();
+        if let Some(error) = store_error {
+            status = format!("Base locale indisponible : {error}");
         }
         let volumes = scan::mounted_volumes();
         let selected_volumes = vec![true; volumes.len()];
@@ -309,9 +312,20 @@ impl GameShelfApp {
         std::thread::spawn(move || {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut scan_exclusions = exclusions;
-                for game in sources::discover(&roots) {
+                for mut game in sources::discover(&roots) {
                     if worker_control.is_cancelled() {
                         break;
+                    }
+                    game.installations.retain(|installation| {
+                        roots
+                            .iter()
+                            .any(|root| scan::path_is_within(&installation.path, root))
+                            && !scan_exclusions
+                                .iter()
+                                .any(|excluded| scan::path_is_within(&installation.path, excluded))
+                    });
+                    if game.installations.is_empty() {
+                        continue;
                     }
                     scan_exclusions.extend(
                         game.installations
@@ -640,19 +654,22 @@ impl GameShelfApp {
             ui.columns(2, |columns| {
                 let (list, details) = columns.split_at_mut(1);
                 egui::ScrollArea::vertical().show(&mut list[0], |ui| {
+                    let card_columns = ((ui.available_width() + 12.0) / 190.0).floor().max(1.0) as usize;
                     egui::Grid::new("game_cards")
-                        .num_columns(3)
+                        .num_columns(card_columns)
                         .spacing([12.0, 12.0])
                         .show(ui, |ui| {
                         for (index, game) in filtered.iter().enumerate() {
                             let (rect, response) = ui.allocate_exact_size(Vec2::new(178.0, 158.0), egui::Sense::click());
                             let selected = self.selected_game.as_deref() == Some(&game.id);
+                            let visible = ui.is_rect_visible(rect);
                             let base = card_color(self.theme);
                             let fill = if selected || response.hovered() { theme_accent(self.theme) } else { base };
                             let painter = ui.painter();
-                            painter.rect_filled(rect, 10.0, fill);
+                            let radius = if self.theme == Theme::Windows98 { 0.0 } else { 10.0 };
+                            painter.rect_filled(rect, radius, fill);
                             let cover_rect = egui::Rect::from_min_size(rect.min + Vec2::new(8.0, 8.0), Vec2::new(162.0, 96.0));
-                            if let Some(texture) = self.load_cover(ctx, game) {
+                            if let Some(texture) = visible.then(|| self.load_cover(ctx, game)).flatten() {
                                 painter.image(texture.id(), cover_rect, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), Color32::WHITE);
                             } else {
                                 painter.rect_filled(cover_rect, 7.0, placeholder_color(self.theme));
@@ -661,11 +678,12 @@ impl GameShelfApp {
                             }
                             let star = if game.favorite { "★ " } else { "" };
                             let title = truncate_title(&game.title, 20);
-                            painter.text(rect.left_top() + Vec2::new(10.0, 112.0), egui::Align2::LEFT_TOP, format!("{star}{title}"), egui::FontId::proportional(14.0), theme_text(self.theme));
+                            let dark_accent = (selected || response.hovered()) && matches!(self.theme, Theme::WindowsXp | Theme::Windows98);
+                            painter.text(rect.left_top() + Vec2::new(10.0, 112.0), egui::Align2::LEFT_TOP, format!("{star}{title}"), egui::FontId::proportional(14.0), if dark_accent { Color32::WHITE } else { theme_text(self.theme) });
                             let category = if game.confirmed { game.category.as_str() } else { tr(self.language, "À confirmer", "To review") };
-                            painter.text(rect.left_top() + Vec2::new(10.0, 136.0), egui::Align2::LEFT_TOP, category, egui::FontId::proportional(11.0), theme_muted_text(self.theme));
+                            painter.text(rect.left_top() + Vec2::new(10.0, 136.0), egui::Align2::LEFT_TOP, category, egui::FontId::proportional(11.0), if dark_accent { Color32::WHITE } else { theme_muted_text(self.theme) });
                             if response.clicked() { self.selected_game = Some(game.id.clone()); }
-                            if index % 3 == 2 { ui.end_row(); }
+                            if (index + 1) % card_columns == 0 { ui.end_row(); }
                         }
                     });
                 });
@@ -936,17 +954,30 @@ impl GameShelfApp {
                 .button(tr(self.language, "Ouvrir le dossier", "Open folder"))
                 .clicked()
             {
-                let _ = open::that(&installation.path);
+                let folder = if installation.path.is_file() {
+                    installation.path.parent().unwrap_or(&installation.path)
+                } else {
+                    &installation.path
+                };
+                if let Err(error) = open::that(folder) {
+                    self.status = error.to_string();
+                }
             }
         }
         if let Some(uri) = launch_uri.filter(|uri| !uri.is_empty()) {
-            launch_uri_handler(&uri);
+            if let Err(error) = launch_uri_handler(&uri) {
+                self.status = error.to_string();
+            }
         }
         if let Some(profile) = launch_profile {
-            launch_profile_command(&profile);
+            if let Err(error) = launch_profile_command(&profile) {
+                self.status = error.to_string();
+            }
         }
         if let Some((emulator, image)) = launch_image {
-            launch_emulator(&emulator, &image);
+            if let Err(error) = launch_emulator(&emulator, &image) {
+                self.status = error.to_string();
+            }
         }
     }
 
@@ -958,6 +989,11 @@ impl GameShelfApp {
         let image = image::open(path).ok()?.thumbnail(500, 300).to_rgba8();
         let size = [image.width() as usize, image.height() as usize];
         let color = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
+        if self.cover_textures.len() >= 128 {
+            if let Some(id) = self.cover_textures.keys().next().cloned() {
+                self.cover_textures.remove(&id);
+            }
+        }
         let texture = ctx.load_texture(game.id.clone(), color, egui::TextureOptions::LINEAR);
         self.cover_textures.insert(game.id.clone(), texture.clone());
         Some(texture)
@@ -1127,9 +1163,9 @@ impl GameShelfApp {
     }
 }
 
-fn launch_profile_command(profile: &LaunchProfile) {
+fn launch_profile_command(profile: &LaunchProfile) -> std::io::Result<()> {
     let mut command = profile_process(profile);
-    let _ = command.spawn();
+    command.spawn().map(|_| ())
 }
 
 fn profile_process(profile: &LaunchProfile) -> Command {
@@ -1137,15 +1173,19 @@ fn profile_process(profile: &LaunchProfile) -> Command {
     command.args(&profile.arguments);
     if let Some(directory) = &profile.working_directory {
         command.current_dir(directory);
-    } else if let Some(parent) = profile.command.parent() {
+    } else if let Some(parent) = profile
+        .command
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
         command.current_dir(parent);
     }
     command
 }
 
-fn launch_emulator(executable: &std::path::Path, image: &std::path::Path) {
+fn launch_emulator(executable: &std::path::Path, image: &std::path::Path) -> std::io::Result<()> {
     let mut command = emulator_process(executable, image);
-    let _ = command.spawn();
+    command.spawn().map(|_| ())
 }
 
 fn emulator_process(executable: &std::path::Path, image: &std::path::Path) -> Command {
@@ -1305,20 +1345,24 @@ fn same_path(left: &std::path::Path, right: &std::path::Path) -> bool {
     }
 }
 
-fn launch_uri_handler(uri: &str) {
+fn launch_uri_handler(uri: &str) -> std::io::Result<()> {
     if uri.starts_with("lutris:") {
-        let _ = Command::new("lutris").arg(uri).spawn();
+        Command::new("lutris").arg(uri).spawn().map(|_| ())
     } else if uri.starts_with("heroic://") {
         #[cfg(target_os = "linux")]
         {
-            let _ = Command::new("heroic").arg(uri).arg("--no-gui").spawn();
+            Command::new("heroic")
+                .arg(uri)
+                .arg("--no-gui")
+                .spawn()
+                .map(|_| ())
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = open::that(uri);
+            open::that(uri)
         }
     } else {
-        let _ = open::that(uri);
+        open::that(uri)
     }
 }
 
@@ -1336,6 +1380,16 @@ impl eframe::App for GameShelfApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_emulator_returns_a_launch_error() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(launch_emulator(
+            &temp.path().join("missing-emulator"),
+            &temp.path().join("game.iso")
+        )
+        .is_err());
+    }
 
     #[test]
     fn windows_classic_theme_preferences_round_trip() {

@@ -35,6 +35,25 @@ pub fn mounted_volumes() -> Vec<Volume> {
         .collect()
 }
 
+pub fn path_is_within(path: &Path, root: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let mut components = path.components();
+        root.components().all(|expected| {
+            components.next().is_some_and(|actual| {
+                actual
+                    .as_os_str()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&expected.as_os_str().to_string_lossy())
+            })
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        path.starts_with(root)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ScanProgress {
     pub visited: usize,
@@ -123,7 +142,10 @@ pub fn scan_roots(
 
 fn should_descend(entry: &DirEntry, exclusions: &[PathBuf]) -> bool {
     let path = entry.path();
-    if exclusions.iter().any(|excluded| path.starts_with(excluded)) {
+    if exclusions
+        .iter()
+        .any(|excluded| path_is_within(path, excluded))
+    {
         return false;
     }
     if !entry.file_type().is_dir() {
@@ -221,7 +243,12 @@ fn candidate_from_executable(path: &Path) -> Option<Game> {
         let arguments = pieces.collect();
         let working_directory = desktop_value(text, "Path")
             .map(PathBuf::from)
-            .or_else(|| command.parent().map(PathBuf::from))
+            .or_else(|| {
+                command
+                    .parent()
+                    .filter(|path| !path.as_os_str().is_empty())
+                    .map(PathBuf::from)
+            })
             .or_else(|| Some(folder.clone()));
         (command, arguments, working_directory)
     } else {
@@ -234,7 +261,11 @@ fn candidate_from_executable(path: &Path) -> Option<Game> {
         launcher_command: None,
     });
     let installation = Installation {
-        path: folder,
+        path: if is_desktop {
+            path.to_path_buf()
+        } else {
+            folder
+        },
         launcher: Launcher::Unknown,
         launch_profile: profile,
         available: true,
@@ -337,25 +368,19 @@ fn has_game_assets(executable: &Path) -> bool {
             .any(|parent| parent.join("Content/Paks").is_dir())
 }
 
-fn looks_like_game(name: &str) -> bool {
+pub(crate) fn looks_like_game(name: &str) -> bool {
     let lowered = name.to_ascii_lowercase();
-    if name.len() < 3
+    if name.trim().is_empty()
         || [
             "unins",
-            "setup",
-            "crash",
-            "report",
+            "setup_",
+            "crashhandler",
+            "crashreporter",
             "unitycrash",
             "vc_redist",
             "directx",
-            "7za",
-            "7z",
             "unrealcefsubprocess",
             "easyanticheat",
-            "launcher",
-            "updater",
-            "helper",
-            "service",
             "redistributable",
         ]
         .iter()
@@ -363,7 +388,19 @@ fn looks_like_game(name: &str) -> bool {
     {
         return false;
     }
-    true
+    !matches!(
+        lowered.as_str(),
+        "setup"
+            | "install"
+            | "installer"
+            | "7za"
+            | "7z"
+            | "7zfm"
+            | "launcher"
+            | "updater"
+            | "helper"
+            | "service"
+    )
 }
 
 #[cfg(test)]
@@ -371,6 +408,28 @@ mod tests {
     use super::*;
     use std::{fs, sync::mpsc};
     use tempfile::tempdir;
+
+    #[test]
+    fn exclusions_match_path_components_and_platform_case_rules() {
+        assert!(path_is_within(
+            Path::new("/games/celeste"),
+            Path::new("/games")
+        ));
+        assert!(!path_is_within(
+            Path::new("/games-backup/celeste"),
+            Path::new("/games")
+        ));
+        #[cfg(windows)]
+        assert!(path_is_within(
+            Path::new("C:/Games/Celeste"),
+            Path::new("c:/games")
+        ));
+        #[cfg(unix)]
+        assert!(!path_is_within(
+            Path::new("/Games/Celeste"),
+            Path::new("/games")
+        ));
+    }
 
     #[test]
     fn ordinary_apps_and_non_game_desktop_entries_are_rejected() {
@@ -454,6 +513,8 @@ mod tests {
         assert!(!looks_like_game("7za"));
         assert!(!looks_like_game("setup_game"));
         assert!(looks_like_game("Moonlight Valley"));
+        assert!(looks_like_game("Crash Bandicoot"));
+        assert!(looks_like_game("FE"));
     }
 
     #[test]
@@ -473,6 +534,7 @@ mod tests {
         let shortcut = temp.path().join("moonlight.desktop");
         fs::write(&shortcut, "[Desktop Entry]\nName=Moonlight Arcade\nCategories=Game;\nExec=\"/games/Moonlight Arcade/run game\" --fullscreen %U\nPath=/games/Moonlight Arcade").unwrap();
         let game = candidate_from_executable(&shortcut).unwrap();
+        assert_eq!(game.installations[0].path, shortcut);
         assert_eq!(game.title, "Moonlight Arcade");
         let profile = game.installations[0].launch_profile.as_ref().unwrap();
         assert_eq!(
