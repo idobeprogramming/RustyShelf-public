@@ -1,6 +1,7 @@
 mod app;
 mod model;
 mod scan;
+mod sources;
 mod store;
 
 fn main() -> eframe::Result<()> {
