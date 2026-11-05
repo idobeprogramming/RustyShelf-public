@@ -106,15 +106,21 @@ impl GameShelfApp {
         let worker_control = control.clone();
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
+            let mut scan_exclusions = exclusions;
             for game in sources::discover(&roots) {
                 if worker_control.is_cancelled() {
                     break;
                 }
+                scan_exclusions.extend(
+                    game.installations
+                        .iter()
+                        .map(|installation| installation.path.clone()),
+                );
                 if sender.send(ScanEvent::Candidate(game)).is_err() {
                     return;
                 }
             }
-            scan::scan_roots(&roots, &exclusions, &worker_control, |event| {
+            scan::scan_roots(&roots, &scan_exclusions, &worker_control, |event| {
                 let _ = sender.send(event);
             });
         });
@@ -318,17 +324,29 @@ impl GameShelfApp {
             ui.columns(2, |columns| {
                 let (list, details) = columns.split_at_mut(1);
                 egui::ScrollArea::vertical().show(&mut list[0], |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        for game in &filtered {
+                    egui::Grid::new("game_cards")
+                        .num_columns(3)
+                        .spacing([12.0, 12.0])
+                        .show(ui, |ui| {
+                        for (index, game) in filtered.iter().enumerate() {
                             egui::Frame::new().fill(Color32::from_rgb(24, 27, 36)).corner_radius(10.0).inner_margin(8.0).show(ui, |ui| {
                                 ui.set_width(170.0);
                                 let texture = self.load_cover(ctx, game);
-                                if let Some(texture) = texture { ui.add(egui::Image::new((texture.id(), Vec2::new(154.0, 96.0))).corner_radius(6.0)); }
-                                else { egui::Frame::new().fill(Color32::from_rgb(51, 47, 77)).corner_radius(6.0).show(ui, |ui| { ui.set_min_size(Vec2::new(154.0, 96.0)); ui.centered_and_justified(|ui| { ui.label(RichText::new(game.title.chars().take(2).collect::<String>().to_uppercase()).size(26.0).strong()); }); }); }
+                                if let Some(texture) = texture { ui.add_sized([154.0, 96.0], egui::Image::new((texture.id(), Vec2::new(154.0, 96.0))).corner_radius(6.0)); }
+                                else {
+                                    let (rect, _) = ui.allocate_exact_size(Vec2::new(154.0, 96.0), egui::Sense::hover());
+                                    ui.painter().rect_filled(rect, 6.0, Color32::from_rgb(51, 47, 77));
+                                    let initials: String = game.title.chars().take(2).collect::<String>().to_uppercase();
+                                    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initials, egui::FontId::proportional(26.0), Color32::WHITE);
+                                }
                                 let star = if game.favorite { "★ " } else { "" };
-                                if ui.selectable_label(self.selected_game.as_deref() == Some(&game.id), format!("{star}{}", game.title)).clicked() { self.selected_game = Some(game.id.clone()); }
-                                ui.label(RichText::new(game.category.clone()).size(11.0).color(Color32::GRAY));
+                                let selected = self.selected_game.as_deref() == Some(&game.id);
+                                let title = egui::Button::new(format!("{star}{}", game.title))
+                                    .fill(if selected { Color32::from_rgb(63, 56, 94) } else { Color32::TRANSPARENT });
+                                if ui.add_sized([154.0, 30.0], title).clicked() { self.selected_game = Some(game.id.clone()); }
+                                ui.add_sized([154.0, 18.0], egui::Label::new(RichText::new(game.category.clone()).size(11.0).color(Color32::GRAY)).truncate());
                             });
+                            if index % 3 == 2 { ui.end_row(); }
                         }
                     });
                 });
@@ -339,12 +357,14 @@ impl GameShelfApp {
 
     fn matches_category(&self, game: &Game) -> bool {
         match self.selected_category.as_str() {
-            "Tous les jeux" => true,
+            "Tous les jeux" => game.confirmed,
             "Favoris" => game.favorite,
-            "Installés" => game
-                .installations
-                .iter()
-                .any(|installation| installation.available),
+            "Installés" => {
+                game.installations
+                    .iter()
+                    .any(|installation| installation.available)
+                    && game.confirmed
+            }
             "À confirmer" => !game.confirmed,
             category => game.category.eq_ignore_ascii_case(category),
         }

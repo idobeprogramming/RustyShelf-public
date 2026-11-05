@@ -179,6 +179,9 @@ fn looks_like_game(name: &str) -> bool {
             "unitycrash",
             "vc_redist",
             "directx",
+            "7za",
+            "7z",
+            "unrealcefsubprocess",
             "easyanticheat",
             "launcher",
             "updater",
@@ -246,5 +249,12 @@ mod tests {
             }
         });
         assert!(cancelled);
+    }
+
+    #[test]
+    fn common_runtime_helpers_are_not_game_candidates() {
+        assert!(!looks_like_game("7za"));
+        assert!(!looks_like_game("setup_game"));
+        assert!(looks_like_game("Moonlight Valley"));
     }
 }
