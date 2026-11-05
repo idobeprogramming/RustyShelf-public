@@ -1,6 +1,6 @@
 use crate::{
     diagnostics::ScanDiagnostics,
-    library::{Filters, GameKind, Sort},
+    library::{Filters, GameKind, SearchQuery, Sort},
     model::{Emulator, Game, Installation, LaunchProfile, Launcher},
     scan::{self, ScanControl, ScanEvent, Volume},
     sources,
@@ -1024,25 +1024,25 @@ impl RustyShelfApp {
             .active_style()
             .and_then(|style| style.gap)
             .unwrap_or(12.0);
+        let query = SearchQuery::new(&self.search);
         let mut filtered: Vec<Game> = self
             .games
             .iter()
             .filter(|game| {
                 self.matches_category(game)
-                    && self
-                        .filters
-                        .matches(game, &self.search, self.game_console(game))
+                    && self.filters.matches(game, &query, self.game_console(game))
             })
             .cloned()
             .collect();
-        filtered.sort_by(|left, right| {
-            let name = left.title.to_lowercase().cmp(&right.title.to_lowercase());
-            match self.filters.sort {
-                Sort::Name => name,
-                Sort::ReverseName => name.reverse(),
-                Sort::Favorites => right.favorite.cmp(&left.favorite).then(name),
-            }
+        filtered.sort_by_cached_key(|game| {
+            (
+                self.filters.sort == Sort::Favorites && !game.favorite,
+                game.title.to_lowercase(),
+            )
         });
+        if self.filters.sort == Sort::ReverseName {
+            filtered.reverse();
+        }
         if !filtered
             .iter()
             .any(|game| self.selected_game.as_ref() == Some(&game.id))
@@ -1105,8 +1105,8 @@ impl RustyShelfApp {
                         .desired_width(210.0)
                         .hint_text(tr(
                             self.language,
-                            "Rechercher un jeu ou une console…",
-                            "Search a game or console…",
+                            "Titre, console, source…",
+                            "Title, console, source…",
                         )),
                 );
                 if ui

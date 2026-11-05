@@ -25,21 +25,69 @@ pub struct Filters {
     pub sort: Sort,
 }
 
-impl Filters {
-    pub fn matches(&self, game: &Game, query: &str, console: Option<&str>) -> bool {
-        let available = game
-            .installations
-            .iter()
-            .any(|installation| installation.available);
-        let query = query.trim().to_lowercase();
+pub struct SearchQuery {
+    terms: Vec<String>,
+}
+
+impl SearchQuery {
+    pub fn new(query: &str) -> Self {
+        Self {
+            terms: normalize_search(query)
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect(),
+        }
+    }
+
+    fn matches(&self, game: &Game, console: Option<&str>) -> bool {
+        if self.terms.is_empty() {
+            return true;
+        }
         let category = if console.is_some() && game.category.starts_with("ROM · ") {
             ""
         } else {
             &game.category
         };
-        let searchable =
-            format!("{} {} {}", game.title, category, console.unwrap_or("")).to_lowercase();
-        searchable.contains(&query)
+        let mut searchable = format!("{} {} {}", game.title, category, console.unwrap_or(""));
+        for installation in &game.installations {
+            searchable.push(' ');
+            searchable.push_str(installation.launcher.label());
+        }
+        let searchable = normalize_search(&searchable);
+        self.terms.iter().all(|term| searchable.contains(term))
+    }
+}
+
+fn normalize_search(text: &str) -> String {
+    let mut normalized = String::with_capacity(text.len());
+    for character in text.chars().flat_map(char::to_lowercase) {
+        normalized.push_str(match character {
+            'à' | 'â' | 'ä' | 'á' | 'ã' | 'å' => "a",
+            'é' | 'è' | 'ê' | 'ë' => "e",
+            'î' | 'ï' | 'í' | 'ì' => "i",
+            'ô' | 'ö' | 'ó' | 'ò' | 'õ' => "o",
+            'ù' | 'û' | 'ü' | 'ú' => "u",
+            'ç' => "c",
+            'ñ' => "n",
+            'œ' => "oe",
+            'æ' => "ae",
+            '\u{0300}'..='\u{036f}' => "", // Decomposed accents from copied titles.
+            _ => {
+                normalized.push(character);
+                continue;
+            }
+        });
+    }
+    normalized
+}
+
+impl Filters {
+    pub fn matches(&self, game: &Game, query: &SearchQuery, console: Option<&str>) -> bool {
+        let available = game
+            .installations
+            .iter()
+            .any(|installation| installation.available);
+        query.matches(game, console)
             && match self.kind {
                 GameKind::All => true,
                 GameKind::Pc => console.is_none(),
@@ -61,6 +109,30 @@ mod tests {
     use crate::model::Installation;
 
     #[test]
+    fn multiword_search_ignores_accents_and_combines_title_console_and_source() {
+        let game = Game::from_installation(
+            "L’Étoile du cœur",
+            "ROM · PlayStation 2",
+            Installation {
+                path: "/roms/adventure.iso".into(),
+                launcher: Launcher::Steam,
+                launch_profile: None,
+                available: true,
+            },
+        );
+        let filters = Filters::default();
+        assert!(filters.matches(
+            &game,
+            &SearchQuery::new("  STEAM coeur etoile NES  "),
+            Some("NES")
+        ));
+        assert!(filters.matches(&game, &SearchQuery::new("E\u{0301}TOILE"), Some("NES")));
+        assert!(!filters.matches(&game, &SearchQuery::new("etoile xbox"), Some("NES")));
+        assert!(!filters.matches(&game, &SearchQuery::new("PlayStation"), Some("NES")));
+        assert!(filters.matches(&game, &SearchQuery::new("  "), Some("NES")));
+    }
+
+    #[test]
     fn combines_all_filters_and_search_for_roms() {
         let mut game = Game::from_installation(
             "Adventure",
@@ -80,11 +152,23 @@ mod tests {
             favorites_only: true,
             ..Default::default()
         };
-        assert!(filters.matches(&game, "advance", Some("Game Boy Advance")));
+        assert!(filters.matches(
+            &game,
+            &SearchQuery::new("advance"),
+            Some("Game Boy Advance")
+        ));
         filters.available = Some(true);
-        assert!(!filters.matches(&game, "advance", Some("Game Boy Advance")));
+        assert!(!filters.matches(
+            &game,
+            &SearchQuery::new("advance"),
+            Some("Game Boy Advance")
+        ));
         filters.available = None;
         filters.kind = GameKind::Pc;
-        assert!(!filters.matches(&game, "adventure", Some("Game Boy Advance")));
+        assert!(!filters.matches(
+            &game,
+            &SearchQuery::new("adventure"),
+            Some("Game Boy Advance")
+        ));
     }
 }
