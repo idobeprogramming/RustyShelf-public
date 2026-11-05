@@ -29,69 +29,115 @@ pub fn discover(roots: &[PathBuf]) -> Vec<Game> {
                 }
             }
         }
-        let common = library.join("common");
-        let manifest_root = library.clone();
-        let Ok(entries) = fs::read_dir(&manifest_root) else {
+        let Ok(entries) = fs::read_dir(&library) else {
             continue;
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .is_some_and(|name| name.starts_with("appmanifest_") && name.ends_with(".acf"))
-            {
-                continue;
+            if is_manifest(&path) {
+                if let Ok(Some(game)) = read_manifest(&path) {
+                    result.push(game);
+                }
             }
-            let Ok(text) = fs::read_to_string(&path) else {
-                continue;
-            };
-            let Some(name) = value(&text, "name") else {
-                continue;
-            };
-            let Some(install_dir) = value(&text, "installdir") else {
-                continue;
-            };
-            let app_id = value(&text, "appid").unwrap_or_default();
-            let install = common.join(install_dir);
-            if !install.exists() {
-                continue;
-            }
-            let profile = LaunchProfile {
-                command: PathBuf::new(),
-                arguments: Vec::new(),
-                working_directory: Some(install.clone()),
-                launcher_command: Some(format!("steam://rungameid/{app_id}")),
-            };
-            result.push(Game::from_installation(
-                name,
-                "Steam",
-                Installation {
-                    path: install,
-                    launcher: Launcher::Steam,
-                    launch_profile: Some(profile),
-                    available: true,
-                },
-            ));
         }
     }
     result
 }
 
+pub fn is_manifest(path: &Path) -> bool {
+    path.parent()
+        .and_then(Path::file_name)
+        .is_some_and(|name| name.eq_ignore_ascii_case("steamapps"))
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                let name = name.to_ascii_lowercase();
+                name.starts_with("appmanifest_") && name.ends_with(".acf")
+            })
+}
+
+pub fn read_manifest(path: &Path) -> Result<Option<Game>, String> {
+    let text = super::read_manifest_text(path)?;
+    let tokens = quoted_tokens(&text)?;
+    let field = |key: &str| {
+        tokens
+            .windows(2)
+            .find(|pair| pair[0] == key)
+            .map(|pair| pair[1].clone())
+    };
+    let name = field("name")
+        .filter(|name| !name.trim().is_empty())
+        .ok_or("Titre Steam manquant")?;
+    let app_id = field("appid")
+        .filter(|id| super::numeric_id(id))
+        .ok_or("Identifiant Steam invalide")?;
+    let install_dir = field("installdir").ok_or("Dossier Steam manquant")?;
+    let common = path
+        .parent()
+        .ok_or("Dossier Steam manquant")?
+        .join("common");
+    let install = super::relative_path(&common, &install_dir)?;
+    if !install.is_dir() {
+        return Ok(None);
+    }
+    Ok(Some(Game::from_installation(
+        name,
+        "Steam",
+        Installation {
+            path: install.clone(),
+            launcher: Launcher::Steam,
+            launch_profile: Some(LaunchProfile {
+                command: PathBuf::new(),
+                arguments: Vec::new(),
+                working_directory: Some(install),
+                launcher_command: Some(format!("steam://rungameid/{app_id}")),
+            }),
+            available: true,
+        },
+    )))
+}
+
 fn value(text: &str, key: &str) -> Option<String> {
-    for line in text.lines() {
-        let mut parts = line
-            .trim()
-            .split('"')
-            .filter(|part| !part.trim().is_empty());
-        let (Some(candidate), Some(value)) = (parts.next(), parts.next()) else {
-            continue;
-        };
-        if candidate.trim() == key {
-            return Some(value.trim().replace("\\\"", "\""));
+    quoted_tokens(text)
+        .ok()?
+        .windows(2)
+        .find(|pair| pair[0] == key)
+        .map(|pair| pair[1].clone())
+}
+
+// Valve files can contain multiple fields on one line and escaped quotes.
+fn quoted_tokens(text: &str) -> Result<Vec<String>, String> {
+    let mut chars = text.chars().peekable();
+    let mut tokens = Vec::new();
+    while let Some(ch) = chars.next() {
+        if ch == '/' && chars.peek() == Some(&'/') {
+            for ch in chars.by_ref() {
+                if ch == '\n' {
+                    break;
+                }
+            }
+        } else if ch == '"' {
+            let mut value = String::new();
+            let mut closed = false;
+            while let Some(ch) = chars.next() {
+                if ch == '"' {
+                    closed = true;
+                    break;
+                }
+                if ch == '\\' && matches!(chars.peek(), Some('"' | '\\')) {
+                    value.push(chars.next().unwrap());
+                } else {
+                    value.push(ch);
+                }
+            }
+            if !closed {
+                return Err("Guillemet non fermé dans le manifeste Steam".into());
+            }
+            tokens.push(value);
         }
     }
-    None
+    Ok(tokens)
 }
 
 fn default_steamapps() -> Vec<PathBuf> {
@@ -115,15 +161,29 @@ fn default_steamapps() -> Vec<PathBuf> {
     paths
 }
 
-#[allow(dead_code)]
-fn _is_child(path: &Path, root: &Path) -> bool {
-    path.starts_with(root)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+    #[test]
+    fn handles_escaped_titles_and_rejects_invalid_ids_and_paths() {
+        let temp = tempdir().unwrap();
+        let library = temp.path().join("steamapps");
+        fs::create_dir_all(library.join("common/Game")).unwrap();
+        let path = library.join("appmanifest_42.acf");
+        let manifest = r#""AppState" { "appid" "42" "name" "The \"Game\"" "installdir" "Game" }"#;
+        fs::write(&path, manifest).unwrap();
+        assert_eq!(read_manifest(&path).unwrap().unwrap().title, "The \"Game\"");
+        for text in [
+            manifest.replace("\"42\"", "\"42?bad\""),
+            manifest.replace("\"installdir\" \"Game\"", "\"installdir\" \"../outside\""),
+            manifest.replace("\"installdir\" \"Game\"", "\"installdir\" \"C:/outside\""),
+            "\"name\" \"unterminated".into(),
+        ] {
+            fs::write(&path, text).unwrap();
+            assert!(read_manifest(&path).is_err());
+        }
+    }
     #[test]
     fn finds_local_manifest_in_secondary_library() {
         let temp = tempdir().unwrap();
@@ -131,7 +191,9 @@ mod tests {
         let installed = library.join("common/Été Game");
         fs::create_dir_all(&installed).unwrap();
         fs::write(library.join("appmanifest_42.acf"), "\"AppState\" {\n\"appid\" \"42\"\n\"name\" \"Été Game\"\n\"installdir\" \"Été Game\"\n}").unwrap();
-        let found = discover(&[temp.path().to_path_buf()]);
+        let found = [read_manifest(&library.join("appmanifest_42.acf"))
+            .unwrap()
+            .unwrap()];
         assert!(found
             .iter()
             .any(|game| game.title == "Été Game"

@@ -610,7 +610,7 @@ impl RustyShelfApp {
                             .map(|installation| installation.path.clone()),
                     );
                     if let Some(store) = &self.store {
-                        if let Err(error) = store.reuse_rom_identity(&mut game) {
+                        if let Err(error) = store.reuse_installation_identity(&mut game) {
                             self.diagnostics.error(error.to_string());
                             continue;
                         }
@@ -749,7 +749,7 @@ impl RustyShelfApp {
             },
         );
         if self.update_library(|store| {
-            store.reuse_rom_identity(&mut game)?;
+            store.reuse_installation_identity(&mut game)?;
             store.save_game(&game)
         }) {
             self.selected_game = Some(game.id);

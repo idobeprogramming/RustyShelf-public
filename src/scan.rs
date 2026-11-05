@@ -116,6 +116,28 @@ pub fn scan_roots(
                     if !entry.file_type().is_file() {
                         continue;
                     }
+                    if crate::sources::is_manifest(entry.path()) {
+                        match crate::sources::from_manifest(entry.path()) {
+                            Ok(Some(mut game)) => {
+                                game.installations.retain(|installation| {
+                                    roots
+                                        .iter()
+                                        .any(|root| path_is_within(&installation.path, root))
+                                        && !exclusions.iter().any(|excluded| {
+                                            path_is_within(&installation.path, excluded)
+                                        })
+                                });
+                                if !game.installations.is_empty() {
+                                    emit(ScanEvent::Candidate(game));
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(message) => {
+                                emit(ScanEvent::Error(entry.path().to_owned(), message))
+                            }
+                        }
+                        continue;
+                    }
                     if crate::rom::console(entry.path()).is_some() {
                         if let Some(game) = candidate_from_disc_image(entry.path()) {
                             emit(ScanEvent::Candidate(game));
@@ -416,6 +438,49 @@ mod tests {
     use super::*;
     use std::{fs, sync::mpsc};
     use tempfile::tempdir;
+
+    #[test]
+    fn finds_custom_steam_libraries_and_reports_invalid_manifests() {
+        let temp = tempdir().unwrap();
+        let library = temp.path().join("Mes jeux/Archive/steamapps");
+        fs::create_dir_all(library.join("common/Été")).unwrap();
+        fs::write(
+            library.join("appmanifest_42.acf"),
+            r#""AppState" { "appid" "42" "name" "Été" "installdir" "Été" }"#,
+        )
+        .unwrap();
+        fs::write(library.join("appmanifest_43.acf"), "broken").unwrap();
+        let mut titles = Vec::new();
+        let mut errors = Vec::new();
+        scan_roots(
+            &[temp.path().to_owned()],
+            &[],
+            &ScanControl::default(),
+            |event| match event {
+                ScanEvent::Candidate(game) => {
+                    assert!(game.confirmed);
+                    assert_eq!(game.installations[0].launcher, Launcher::Steam);
+                    titles.push(game.title);
+                }
+                ScanEvent::Error(path, _) => errors.push(path),
+                _ => {}
+            },
+        );
+        assert_eq!(titles, ["Été"]);
+        assert_eq!(errors, [library.join("appmanifest_43.acf")]);
+        let mut count = 0;
+        scan_roots(
+            &[temp.path().to_owned()],
+            &[library.join("common")],
+            &ScanControl::default(),
+            |event| {
+                if matches!(event, ScanEvent::Candidate(_)) {
+                    count += 1;
+                }
+            },
+        );
+        assert_eq!(count, 0);
+    }
 
     #[test]
     fn rejects_shader_database_and_generated_files_even_in_rom_folders() {

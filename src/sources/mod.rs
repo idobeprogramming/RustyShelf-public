@@ -5,7 +5,57 @@ mod lutris;
 mod steam;
 
 use crate::model::Game;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+pub fn read_manifest_text(path: &Path) -> Result<String, String> {
+    use std::io::Read;
+    const MAX_BYTES: u64 = 4 * 1024 * 1024;
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut text = String::new();
+    file.take(MAX_BYTES + 1)
+        .read_to_string(&mut text)
+        .map_err(|error| error.to_string())?;
+    if text.len() as u64 > MAX_BYTES {
+        return Err("Manifeste trop volumineux (limite de 4 Mo)".into());
+    }
+    Ok(text)
+}
+
+fn numeric_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.bytes().all(|byte| byte.is_ascii_digit())
+        && id.parse::<u64>().is_ok_and(|id| id > 0)
+}
+
+fn relative_path(root: &Path, value: &str) -> Result<PathBuf, String> {
+    let normalized = value.replace('\\', "/");
+    let path = Path::new(&normalized);
+    if normalized.is_empty()
+        || normalized.contains(':')
+        || path.is_absolute()
+        || path.components().any(|part| {
+            !matches!(
+                part,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+    {
+        return Err("Chemin d’installation relatif invalide".into());
+    }
+    Ok(root.join(path))
+}
+
+pub fn is_manifest(path: &Path) -> bool {
+    steam::is_manifest(path)
+}
+
+pub fn from_manifest(path: &Path) -> Result<Option<Game>, String> {
+    if steam::is_manifest(path) {
+        steam::read_manifest(path)
+    } else {
+        Ok(None)
+    }
+}
 
 pub fn discover(roots: &[PathBuf]) -> Vec<Game> {
     let mut games = Vec::new();

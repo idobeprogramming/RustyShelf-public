@@ -199,10 +199,7 @@ impl Store {
         rows.collect()
     }
 
-    pub fn reuse_rom_identity(&self, game: &mut Game) -> rusqlite::Result<()> {
-        if crate::rom::game_console(game).is_none() {
-            return Ok(());
-        }
+    pub fn reuse_installation_identity(&self, game: &mut Game) -> rusqlite::Result<()> {
         for installation in &game.installations {
             let id: Option<String> = self.connection.query_row(
                 "SELECT game_id FROM installations JOIN games ON games.id=installations.game_id WHERE path=?1 ORDER BY confirmed DESC, favorite DESC LIMIT 1",
@@ -429,6 +426,38 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn recognized_title_reuses_unknown_installation_and_preserves_edits() {
+        let temp = tempdir().unwrap();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        let install = Installation {
+            path: temp.path().join("game"),
+            launcher: Launcher::Unknown,
+            launch_profile: None,
+            available: true,
+        };
+        let unknown = Game::from_installation("game-win64", "À confirmer", install.clone());
+        store.save_game(&unknown).unwrap();
+        store.set_category(&unknown.id, "Mes jeux").unwrap();
+        store.set_favorite(&unknown.id, true).unwrap();
+        let mut known = Game::from_installation(
+            "Official title",
+            "Steam",
+            Installation {
+                launcher: Launcher::Steam,
+                ..install
+            },
+        );
+        store.reuse_installation_identity(&mut known).unwrap();
+        assert_eq!(known.id, unknown.id);
+        store.save_game(&known).unwrap();
+        let games = store.games().unwrap();
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].title, "Official title");
+        assert_eq!(games[0].category, "Mes jeux");
+        assert!(games[0].favorite && games[0].confirmed);
+    }
+
+    #[test]
     fn rescans_preserve_user_cover_even_when_the_image_is_offline() {
         let temp = tempdir().unwrap();
         let db = temp.path().join("library.db");
@@ -520,7 +549,7 @@ mod tests {
         let mut rescanned =
             Game::from_installation("Same title", "ROM · Images à classer", install);
         assert_ne!(rescanned.id, old.id);
-        store.reuse_rom_identity(&mut rescanned).unwrap();
+        store.reuse_installation_identity(&mut rescanned).unwrap();
         assert_eq!(rescanned.id, old.id);
         store.save_game(&rescanned).unwrap();
         let library = store.games().unwrap();
