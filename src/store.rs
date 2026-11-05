@@ -115,6 +115,17 @@ impl Store {
             .optional()
     }
 
+    pub fn backup_to(&self, path: &std::path::Path) -> Result<(), String> {
+        if let (Some(source), Ok(destination)) = (self.connection.path(), path.canonicalize()) {
+            if std::path::Path::new(source).canonicalize().ok().as_ref() == Some(&destination) {
+                return Err("Choisis un fichier différent de la bibliothèque active.".into());
+            }
+        }
+        self.connection
+            .backup(rusqlite::DatabaseName::Main, path, None)
+            .map_err(|error| error.to_string())
+    }
+
     pub fn set_preference(&self, key: &str, value: &str) -> rusqlite::Result<()> {
         self.connection.execute("INSERT INTO preferences(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key, value])?;
         Ok(())
@@ -376,6 +387,24 @@ fn parse_launcher(value: &str) -> Launcher {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn backup_preserves_preferences_and_rejects_the_active_database() {
+        let temp = tempdir().unwrap();
+        let active = temp.path().join("active.sqlite3");
+        let backup = temp.path().join("backup.sqlite3");
+        let store = Store::open(&active).unwrap();
+        store
+            .set_preference("console_emulators", "{\"NES\":\"retroarch\"}")
+            .unwrap();
+        assert!(store.backup_to(&active).is_err());
+        store.backup_to(&backup).unwrap();
+        let restored = Store::open(&backup).unwrap();
+        assert_eq!(
+            restored.preference("console_emulators").unwrap(),
+            Some("{\"NES\":\"retroarch\"}".into())
+        );
+    }
 
     #[test]
     fn same_title_on_two_consoles_stays_separate_after_reopening() {

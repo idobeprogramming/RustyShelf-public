@@ -1769,6 +1769,32 @@ impl RustyShelfApp {
                             }
                         });
                 }
+                ui.separator();
+                ui.heading(tr(self.language, "Données et sauvegarde", "Data and backup"));
+                ui.label(tr(self.language, "La sauvegarde conserve la bibliothèque et les réglages. L’export JSON permet de consulter le catalogue dans un autre outil.", "Backup includes your library and settings. JSON export lets you read your catalog in another tool."));
+                if ui.add_enabled(self.scan_control.is_none() && self.store.is_some(), egui::Button::new(tr(self.language, "Sauvegarder la bibliothèque…", "Back up library…"))).clicked() {
+                    if let Some(path) = rfd::FileDialog::new().set_file_name("rustyshelf-backup.sqlite3").add_filter("SQLite", &["sqlite3"]).save_file() {
+                        if let Some(store) = &self.store {
+                            self.status = match store.backup_to(&path) {
+                                Ok(()) => format!("{} : {}", tr(self.language, "Sauvegarde créée", "Backup created"), path.display()),
+                                Err(error) => error,
+                            };
+                        }
+                    }
+                }
+                if ui.add_enabled(self.scan_control.is_none(), egui::Button::new(tr(self.language, "Exporter le catalogue JSON…", "Export catalog JSON…"))).clicked() {
+                    if let Some(path) = rfd::FileDialog::new().set_file_name("rustyshelf-catalogue.json").add_filter("JSON", &["json"]).save_file() {
+                        let document = serde_json::json!({
+                            "format": "rustyshelf-catalogue", "version": 1,
+                            "games": self.games, "console_overrides": self.console_overrides,
+                            "console_emulators": self.console_emulators,
+                        });
+                        self.status = match serde_json::to_vec_pretty(&document).map_err(|error| error.to_string()).and_then(|bytes| std::fs::write(&path, bytes).map_err(|error| error.to_string())) {
+                            Ok(()) => format!("{} : {}", tr(self.language, "Catalogue exporté", "Catalog exported"), path.display()),
+                            Err(error) => error,
+                        };
+                    }
+                }
             });
         if close {
             self.show_options = false;
