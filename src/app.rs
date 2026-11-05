@@ -206,7 +206,7 @@ pub struct RustyShelfApp {
     scan_exclusions: Vec<PathBuf>,
     scan_seen_paths: Vec<PathBuf>,
     diagnostics: ScanDiagnostics,
-    cover_textures: HashMap<String, TextureHandle>,
+    cover_textures: HashMap<String, (PathBuf, Option<TextureHandle>)>,
     category_edit: String,
     category_edit_id: Option<String>,
     language: Language,
@@ -1550,6 +1550,13 @@ impl RustyShelfApp {
                 .add_filter("Image", &["png", "jpg", "jpeg", "bmp", "ico"])
                 .pick_file()
             {
+                if let Err(error) = read_cover(&path) {
+                    self.status = format!(
+                        "{} : {error}",
+                        tr(self.language, "Vignette illisible", "Unreadable cover")
+                    );
+                    return;
+                }
                 if self.update_library(|store| store.set_cover(&game.id, Some(&path))) {
                     self.cover_textures.remove(&game.id);
                 }
@@ -1713,21 +1720,24 @@ impl RustyShelfApp {
     }
 
     fn load_cover(&mut self, ctx: &egui::Context, game: &Game) -> Option<TextureHandle> {
-        if let Some(texture) = self.cover_textures.get(&game.id) {
-            return Some(texture.clone());
-        }
         let path = game.cover_path.as_ref()?;
-        let image = image::open(path).ok()?.thumbnail(500, 300).to_rgba8();
-        let size = [image.width() as usize, image.height() as usize];
-        let color = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
+        if let Some((cached_path, texture)) = self.cover_textures.get(&game.id) {
+            if cached_path == path {
+                return texture.clone();
+            }
+        }
+        let texture = read_cover(path)
+            .ok()
+            .map(|color| ctx.load_texture(game.id.clone(), color, egui::TextureOptions::LINEAR));
         if self.cover_textures.len() >= 128 {
             if let Some(id) = self.cover_textures.keys().next().cloned() {
                 self.cover_textures.remove(&id);
             }
         }
-        let texture = ctx.load_texture(game.id.clone(), color, egui::TextureOptions::LINEAR);
-        self.cover_textures.insert(game.id.clone(), texture.clone());
-        Some(texture)
+        // Cache failures too: a missing drive or corrupt image must not cause I/O every frame.
+        self.cover_textures
+            .insert(game.id.clone(), (path.clone(), texture.clone()));
+        texture
     }
 
     fn options_window(&mut self, ctx: &egui::Context) {
@@ -1744,6 +1754,9 @@ impl RustyShelfApp {
             .vscroll(true)
             .show(ctx, |ui| {
                 ui.heading(tr(self.language, "Apparence et langue", "Appearance and language"));
+                if ui.button(tr(self.language, "Recharger les vignettes locales", "Reload local covers")).clicked() {
+                    self.cover_textures.clear();
+                }
                 let previous_language = self.language;
                 egui::ComboBox::from_label(tr(self.language, "Langue", "Language"))
                     .selected_text(match self.language { Language::French => "Français", Language::English => "English" })
@@ -1965,6 +1978,30 @@ impl RustyShelfApp {
             self.show_options = false;
         }
     }
+}
+
+fn read_cover(path: &std::path::Path) -> Result<egui::ColorImage, String> {
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    if file.metadata().map_err(|error| error.to_string())?.len() > 32 * 1024 * 1024 {
+        return Err("Vignette trop volumineuse (32 Mo maximum)".into());
+    }
+    let mut reader = image::ImageReader::new(std::io::BufReader::new(file))
+        .with_guessed_format()
+        .map_err(|error| error.to_string())?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(4096);
+    limits.max_image_height = Some(4096);
+    limits.max_alloc = Some(64 * 1024 * 1024);
+    reader.limits(limits);
+    let image = reader
+        .decode()
+        .map_err(|error| error.to_string())?
+        .thumbnail(500, 300)
+        .to_rgba8();
+    Ok(egui::ColorImage::from_rgba_unmultiplied(
+        [image.width() as usize, image.height() as usize],
+        image.as_raw(),
+    ))
 }
 
 fn launch_profile_command(profile: &LaunchProfile) -> std::io::Result<()> {
@@ -2306,6 +2343,25 @@ mod tests {
             assert!(app.games[0].installations[0].available);
             assert_eq!(app.diagnostics.error_count, usize::from(abrupt));
         }
+    }
+
+    #[test]
+    fn covers_cache_missing_files_and_reload_after_explicit_refresh() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("cover.png");
+        let mut app = test_app();
+        let mut game = app.games[0].clone();
+        game.cover_path = Some(path.clone());
+        let ctx = egui::Context::default();
+        assert!(app.load_cover(&ctx, &game).is_none());
+        image::RgbaImage::new(12, 8).save(&path).unwrap();
+        assert!(app.load_cover(&ctx, &game).is_none());
+        app.cover_textures.clear();
+        assert!(app.load_cover(&ctx, &game).is_some());
+        game.cover_path = Some(temp.path().join("different.png"));
+        assert!(app.load_cover(&ctx, &game).is_none());
+        image::RgbaImage::new(4097, 1).save(&path).unwrap();
+        assert!(read_cover(&path).is_err());
     }
 
     #[test]
