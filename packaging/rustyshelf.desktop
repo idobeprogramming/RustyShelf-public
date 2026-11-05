@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=GameShelf
+Name=RustyShelf
 GenericName=Bibliothèque de jeux
 Comment=Bibliothèque de jeux hors ligne
-Exec=gameshelf
+Exec=rustyshelf
 Terminal=false
 Categories=Game;Utility;
 StartupNotify=true

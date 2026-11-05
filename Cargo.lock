@@ -1112,25 +1112,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gameshelf"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "eframe",
- "egui_extras",
- "image",
- "open",
- "rfd",
- "rusqlite",
- "serde",
- "serde_json",
- "sysinfo",
- "tempfile",
- "thiserror 2.0.21",
- "walkdir",
-]
-
-[[package]]
 name = "gethostname"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2677,6 +2658,25 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "rustyshelf"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "eframe",
+ "egui_extras",
+ "image",
+ "open",
+ "rfd",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tempfile",
+ "thiserror 2.0.21",
+ "walkdir",
+]
 
 [[package]]
 name = "same-file"

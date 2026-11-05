@@ -13,8 +13,8 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        "GameShelf",
+        "RustyShelf",
         options,
-        Box::new(|cc| Ok(Box::new(app::GameShelfApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(app::RustyShelfApp::new(cc)))),
     )
 }

@@ -21,8 +21,8 @@ jobs:
       - run: .\build-windows.ps1
       - uses: actions/upload-artifact@v4
         with:
-          name: GameShelf-windows-x86_64
-          path: dist/GameShelf-windows-x86_64.zip
+          name: RustyShelf-windows-x86_64
+          path: dist/RustyShelf-windows-x86_64.zip
           if-no-files-found: error
   linux:
     runs-on: ubuntu-24.04
@@ -39,6 +39,6 @@ jobs:
       - run: bash build-linux.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: GameShelf-linux-x86_64
-          path: dist/GameShelf-linux-x86_64.tar.gz
+          name: RustyShelf-linux-x86_64
+          path: dist/RustyShelf-linux-x86_64.tar.gz
           if-no-files-found: error

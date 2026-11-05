@@ -1,5 +1,5 @@
 [package]
-name = "gameshelf"
+name = "rustyshelf"
 version = "0.1.0"
 edition = "2021"
 description = "Bibliotheque de jeux hors ligne pour Windows et Linux"

@@ -38,20 +38,20 @@ impl Language {
 enum Theme {
     Dark,
     Light,
-    Vista,
-    WindowsXp,
-    Windows98,
-    LiquidGlass,
+    Breeze,
+    Horizon,
+    Classic,
+    Prism,
 }
 
 impl Theme {
     fn parse(value: Option<String>) -> Self {
         match value.as_deref() {
             Some("light") => Self::Light,
-            Some("vista") => Self::Vista,
-            Some("xp") => Self::WindowsXp,
-            Some("win98") => Self::Windows98,
-            Some("liquid") => Self::LiquidGlass,
+            Some("breeze" | "vista") => Self::Breeze,
+            Some("horizon" | "xp") => Self::Horizon,
+            Some("retro" | "win98") => Self::Classic,
+            Some("prism" | "liquid") => Self::Prism,
             _ => Self::Dark,
         }
     }
@@ -59,34 +59,34 @@ impl Theme {
         match self {
             Self::Dark => "dark",
             Self::Light => "light",
-            Self::Vista => "vista",
-            Self::WindowsXp => "xp",
-            Self::Windows98 => "win98",
-            Self::LiquidGlass => "liquid",
+            Self::Breeze => "breeze",
+            Self::Horizon => "horizon",
+            Self::Classic => "retro",
+            Self::Prism => "prism",
         }
     }
     fn label(self, language: Language) -> &'static str {
         match (self, language) {
-            (Self::Dark, Language::French) => "Sombre",
-            (Self::Dark, Language::English) => "Dark",
-            (Self::Light, Language::French) => "Clair",
-            (Self::Light, Language::English) => "Light",
-            (Self::Vista, Language::French) => "Windows Vista",
-            (Self::Vista, Language::English) => "Windows Vista",
-            (Self::WindowsXp, Language::French) => "Windows XP",
-            (Self::WindowsXp, Language::English) => "Windows XP",
-            (Self::Windows98, Language::French) => "Windows 98",
-            (Self::Windows98, Language::English) => "Windows 98",
-            (Self::LiquidGlass, Language::French) => "Liquid Glass",
-            (Self::LiquidGlass, Language::English) => "Liquid Glass",
+            (Self::Dark, Language::French) => "Nocturne",
+            (Self::Dark, Language::English) => "Nocturne",
+            (Self::Light, Language::French) => "Aurore",
+            (Self::Light, Language::English) => "Dawn",
+            (Self::Breeze, Language::French) => "Brise",
+            (Self::Breeze, Language::English) => "Brise",
+            (Self::Horizon, Language::French) => "Horizon",
+            (Self::Horizon, Language::English) => "Horizon",
+            (Self::Classic, Language::French) => "Rétro",
+            (Self::Classic, Language::English) => "Rétro",
+            (Self::Prism, Language::French) => "Prisme",
+            (Self::Prism, Language::English) => "Prisme",
         }
     }
 }
 
 fn apply_theme(ctx: &egui::Context, theme: Theme) {
     let mut visuals = match theme {
-        Theme::Light | Theme::Vista | Theme::WindowsXp | Theme::Windows98 => egui::Visuals::light(),
-        Theme::Dark | Theme::LiquidGlass => egui::Visuals::dark(),
+        Theme::Light | Theme::Breeze | Theme::Horizon | Theme::Classic => egui::Visuals::light(),
+        Theme::Dark | Theme::Prism => egui::Visuals::dark(),
     };
     match theme {
         Theme::Dark => {
@@ -99,7 +99,7 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
             visuals.window_fill = Color32::from_rgb(250, 251, 254);
             visuals.widgets.active.bg_fill = Color32::from_rgb(102, 85, 190);
         }
-        Theme::Vista => {
+        Theme::Breeze => {
             visuals.panel_fill = Color32::from_rgb(211, 229, 245);
             visuals.window_fill = Color32::from_rgb(237, 246, 255);
             visuals.widgets.inactive.bg_fill = Color32::from_rgb(220, 237, 251);
@@ -107,7 +107,7 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
             visuals.widgets.active.bg_fill = Color32::from_rgb(89, 151, 204);
             visuals.window_corner_radius = egui::CornerRadius::same(5);
         }
-        Theme::WindowsXp => {
+        Theme::Horizon => {
             visuals.panel_fill = Color32::from_rgb(226, 236, 252);
             visuals.window_fill = Color32::from_rgb(246, 249, 255);
             visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(233, 241, 253);
@@ -117,7 +117,7 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
             visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, Color32::WHITE);
             visuals.window_corner_radius = egui::CornerRadius::same(8);
         }
-        Theme::Windows98 => {
+        Theme::Classic => {
             let classic_gray = Color32::from_rgb(192, 192, 192);
             visuals.panel_fill = classic_gray;
             visuals.window_fill = classic_gray;
@@ -133,7 +133,7 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
             visuals.widgets.hovered.corner_radius = egui::CornerRadius::ZERO;
             visuals.widgets.active.corner_radius = egui::CornerRadius::ZERO;
         }
-        Theme::LiquidGlass => {
+        Theme::Prism => {
             visuals.panel_fill = Color32::from_rgba_unmultiplied(20, 29, 49, 235);
             visuals.window_fill = Color32::from_rgba_unmultiplied(49, 65, 94, 220);
             visuals.widgets.noninteractive.bg_fill =
@@ -166,7 +166,7 @@ fn launcher_label(launcher: &Launcher, language: Language) -> &'static str {
     }
 }
 
-pub struct GameShelfApp {
+pub struct RustyShelfApp {
     selected_category: String,
     search: String,
     show_options: bool,
@@ -194,7 +194,7 @@ pub struct GameShelfApp {
     preferred_emulator: Option<String>,
 }
 
-impl GameShelfApp {
+impl RustyShelfApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (store, store_error) = match Store::open_default() {
             Ok(store) => (Some(store), None),
@@ -523,7 +523,7 @@ impl GameShelfApp {
                             .size(26.0)
                             .color(Color32::from_rgb(135, 117, 255)),
                     );
-                    ui.label(RichText::new("GAMESHELF").size(18.0).strong());
+                    ui.label(RichText::new("RUSTYSHELF").size(18.0).strong());
                 });
                 ui.add_space(25.0);
                 ui.label(
@@ -666,7 +666,7 @@ impl GameShelfApp {
                             let base = card_color(self.theme);
                             let fill = if selected || response.hovered() { theme_accent(self.theme) } else { base };
                             let painter = ui.painter();
-                            let radius = if self.theme == Theme::Windows98 { 0.0 } else { 10.0 };
+                            let radius = if self.theme == Theme::Classic { 0.0 } else { 10.0 };
                             painter.rect_filled(rect, radius, fill);
                             let cover_rect = egui::Rect::from_min_size(rect.min + Vec2::new(8.0, 8.0), Vec2::new(162.0, 96.0));
                             if let Some(texture) = visible.then(|| self.load_cover(ctx, game)).flatten() {
@@ -678,7 +678,7 @@ impl GameShelfApp {
                             }
                             let star = if game.favorite { "★ " } else { "" };
                             let title = truncate_title(&game.title, 20);
-                            let dark_accent = (selected || response.hovered()) && matches!(self.theme, Theme::WindowsXp | Theme::Windows98);
+                            let dark_accent = (selected || response.hovered()) && matches!(self.theme, Theme::Horizon | Theme::Classic);
                             painter.text(rect.left_top() + Vec2::new(10.0, 112.0), egui::Align2::LEFT_TOP, format!("{star}{title}"), egui::FontId::proportional(14.0), if dark_accent { Color32::WHITE } else { theme_text(self.theme) });
                             let category = if game.confirmed { game.category.as_str() } else { tr(self.language, "À confirmer", "To review") };
                             painter.text(rect.left_top() + Vec2::new(10.0, 136.0), egui::Align2::LEFT_TOP, category, egui::FontId::proportional(11.0), if dark_accent { Color32::WHITE } else { theme_muted_text(self.theme) });
@@ -1023,10 +1023,10 @@ impl GameShelfApp {
                         for theme in [
                             Theme::Dark,
                             Theme::Light,
-                            Theme::Vista,
-                            Theme::WindowsXp,
-                            Theme::Windows98,
-                            Theme::LiquidGlass,
+                            Theme::Breeze,
+                            Theme::Horizon,
+                            Theme::Classic,
+                            Theme::Prism,
                         ] {
                             ui.selectable_value(&mut self.theme, theme, theme.label(self.language));
                         }
@@ -1201,10 +1201,10 @@ fn card_color(theme: Theme) -> Color32 {
     match theme {
         Theme::Dark => Color32::from_rgb(24, 27, 36),
         Theme::Light => Color32::from_rgb(249, 250, 253),
-        Theme::Vista => Color32::from_rgb(229, 241, 251),
-        Theme::WindowsXp => Color32::from_rgb(233, 241, 253),
-        Theme::Windows98 => Color32::from_rgb(212, 208, 200),
-        Theme::LiquidGlass => Color32::from_rgba_unmultiplied(66, 85, 119, 120),
+        Theme::Breeze => Color32::from_rgb(229, 241, 251),
+        Theme::Horizon => Color32::from_rgb(233, 241, 253),
+        Theme::Classic => Color32::from_rgb(212, 208, 200),
+        Theme::Prism => Color32::from_rgba_unmultiplied(66, 85, 119, 120),
     }
 }
 
@@ -1212,10 +1212,10 @@ fn theme_accent(theme: Theme) -> Color32 {
     match theme {
         Theme::Dark => Color32::from_rgb(57, 50, 86),
         Theme::Light => Color32::from_rgb(226, 221, 249),
-        Theme::Vista => Color32::from_rgb(190, 220, 244),
-        Theme::WindowsXp => Color32::from_rgb(49, 106, 197),
-        Theme::Windows98 => Color32::from_rgb(0, 0, 128),
-        Theme::LiquidGlass => Color32::from_rgba_unmultiplied(112, 145, 199, 150),
+        Theme::Breeze => Color32::from_rgb(190, 220, 244),
+        Theme::Horizon => Color32::from_rgb(49, 106, 197),
+        Theme::Classic => Color32::from_rgb(0, 0, 128),
+        Theme::Prism => Color32::from_rgba_unmultiplied(112, 145, 199, 150),
     }
 }
 
@@ -1223,17 +1223,17 @@ fn placeholder_color(theme: Theme) -> Color32 {
     match theme {
         Theme::Dark => Color32::from_rgb(51, 47, 77),
         Theme::Light => Color32::from_rgb(220, 216, 239),
-        Theme::Vista => Color32::from_rgb(170, 204, 229),
-        Theme::WindowsXp => Color32::from_rgb(190, 218, 250),
-        Theme::Windows98 => Color32::from_rgb(192, 192, 192),
-        Theme::LiquidGlass => Color32::from_rgba_unmultiplied(121, 151, 198, 140),
+        Theme::Breeze => Color32::from_rgb(170, 204, 229),
+        Theme::Horizon => Color32::from_rgb(190, 218, 250),
+        Theme::Classic => Color32::from_rgb(192, 192, 192),
+        Theme::Prism => Color32::from_rgba_unmultiplied(121, 151, 198, 140),
     }
 }
 
 fn theme_text(theme: Theme) -> Color32 {
     if matches!(
         theme,
-        Theme::Light | Theme::Vista | Theme::WindowsXp | Theme::Windows98
+        Theme::Light | Theme::Breeze | Theme::Horizon | Theme::Classic
     ) {
         Color32::from_rgb(35, 43, 55)
     } else {
@@ -1244,7 +1244,7 @@ fn theme_text(theme: Theme) -> Color32 {
 fn theme_muted_text(theme: Theme) -> Color32 {
     if matches!(
         theme,
-        Theme::Light | Theme::Vista | Theme::WindowsXp | Theme::Windows98
+        Theme::Light | Theme::Breeze | Theme::Horizon | Theme::Classic
     ) {
         Color32::from_rgb(90, 101, 116)
     } else {
@@ -1366,7 +1366,7 @@ fn launch_uri_handler(uri: &str) -> std::io::Result<()> {
     }
 }
 
-impl eframe::App for GameShelfApp {
+impl eframe::App for RustyShelfApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_scan(ctx);
         self.sidebar(ctx);
@@ -1394,8 +1394,8 @@ mod tests {
     #[test]
     fn windows_classic_theme_preferences_round_trip() {
         for (theme, key, label) in [
-            (Theme::WindowsXp, "xp", "Windows XP"),
-            (Theme::Windows98, "win98", "Windows 98"),
+            (Theme::Horizon, "horizon", "Horizon"),
+            (Theme::Classic, "retro", "Rétro"),
         ] {
             assert_eq!(Theme::parse(Some(key.to_owned())), theme);
             assert_eq!(theme.key(), key);

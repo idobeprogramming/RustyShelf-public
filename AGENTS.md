@@ -1,4 +1,4 @@
-# Consignes GameShelf
+# Consignes RustyShelf
 
 - Interface et messages visibles en français ; le code reste en anglais.
 - Chaque fonctionnalité est petite, testée, puis commitée séparément.

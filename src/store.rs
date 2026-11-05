@@ -8,12 +8,16 @@ pub struct Store {
 
 impl Store {
     pub fn open_default() -> rusqlite::Result<Self> {
-        let root = dirs::data_local_dir()
-            .unwrap_or_else(std::env::temp_dir)
-            .join("GameShelf");
+        let base = dirs::data_local_dir().unwrap_or_else(std::env::temp_dir);
+        // Reuse the previous library in place, including any SQLite WAL files.
+        let legacy = base.join("GameShelf/gameshelf.sqlite3");
+        if legacy.is_file() {
+            return Self::open(legacy);
+        }
+        let root = base.join("RustyShelf");
         fs::create_dir_all(&root)
             .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
-        Self::open(root.join("gameshelf.sqlite3"))
+        Self::open(root.join("rustyshelf.sqlite3"))
     }
 
     pub fn open(path: impl Into<PathBuf>) -> rusqlite::Result<Self> {
