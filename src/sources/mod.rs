@@ -14,7 +14,7 @@ pub fn discover(roots: &[PathBuf]) -> Vec<Game> {
     games.extend(heroic::discover());
     games.extend(lutris::discover());
     games.extend(gog::discover());
-    games.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    games.sort_by_key(|game| game.title.to_lowercase());
     games.dedup_by(|a, b| a.id == b.id);
     games
 }

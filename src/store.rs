@@ -38,11 +38,11 @@ impl Store {
 
     pub fn save_game(&self, game: &Game) -> rusqlite::Result<()> {
         let tx = self.connection.unchecked_transaction()?;
-        let existing: Option<(bool, Option<String>)> = tx
+        let existing: Option<(bool, Option<String>, String, bool, bool)> = tx
             .query_row(
-                "SELECT favorite, cover_path FROM games WHERE id=?1",
+                "SELECT favorite, cover_path, category, category_custom, confirmed FROM games WHERE id=?1",
                 [&game.id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             )
             .optional()?;
         let favorite = existing.as_ref().map_or(game.favorite, |row| row.0);
@@ -50,12 +50,16 @@ impl Store {
             .cover_path
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
-            .or_else(|| existing.and_then(|row| row.1));
+            .or_else(|| existing.as_ref().and_then(|row| row.1.clone()));
+        let category = existing
+            .as_ref()
+            .filter(|row| row.3 || (row.4 && !game.confirmed))
+            .map_or_else(|| game.category.clone(), |row| row.2.clone());
         tx.execute(
             "INSERT INTO games(id,title,category,favorite,confirmed,cover_path) VALUES(?1,?2,?3,?4,?5,?6)
              ON CONFLICT(id) DO UPDATE SET title=excluded.title, category=excluded.category,
-             confirmed=excluded.confirmed, cover_path=COALESCE(excluded.cover_path,games.cover_path)",
-            params![game.id, game.title, game.category, favorite, game.confirmed, cover],
+             confirmed=MAX(excluded.confirmed,games.confirmed), cover_path=COALESCE(excluded.cover_path,games.cover_path)",
+            params![game.id, game.title, category, favorite, game.confirmed, cover],
         )?;
         for installation in &game.installations {
             let profile = installation
@@ -64,7 +68,9 @@ impl Store {
                 .and_then(|p| serde_json::to_string(p).ok());
             tx.execute(
                 "INSERT INTO installations(game_id,path,launcher,profile,available) VALUES(?1,?2,?3,?4,?5)
-                 ON CONFLICT(game_id,path) DO UPDATE SET launcher=excluded.launcher, profile=excluded.profile, available=excluded.available",
+                 ON CONFLICT(game_id,path) DO UPDATE SET
+                 launcher=CASE WHEN excluded.launcher='unknown' AND installations.launcher<>'unknown' THEN installations.launcher ELSE excluded.launcher END,
+                 profile=COALESCE(excluded.profile,installations.profile), available=excluded.available",
                 params![game.id, installation.path.to_string_lossy(), launcher_name(&installation.launcher), profile, installation.available],
             )?;
         }
@@ -126,14 +132,6 @@ impl Store {
         Ok(())
     }
 
-    pub fn category_is_custom(&self, id: &str) -> rusqlite::Result<bool> {
-        self.connection.query_row(
-            "SELECT category_custom FROM games WHERE id=?1",
-            [id],
-            |row| row.get(0),
-        )
-    }
-
     pub fn add_exclusion(&self, path: &std::path::Path) -> rusqlite::Result<()> {
         self.connection.execute(
             "INSERT OR IGNORE INTO excluded_paths(path) VALUES(?1)",
@@ -158,14 +156,31 @@ impl Store {
         rows.collect()
     }
 
-    pub fn mark_unseen_unavailable(&self, seen_paths: &[PathBuf]) -> rusqlite::Result<()> {
+    pub fn mark_unseen_under_roots_unavailable(
+        &self,
+        roots: &[PathBuf],
+        exclusions: &[PathBuf],
+        seen_paths: &[PathBuf],
+    ) -> rusqlite::Result<()> {
         let tx = self.connection.unchecked_transaction()?;
-        tx.execute("UPDATE installations SET available=0", [])?;
-        for path in seen_paths {
-            tx.execute(
-                "UPDATE installations SET available=1 WHERE path=?1",
-                [path.to_string_lossy()],
-            )?;
+        let paths = {
+            let mut query = tx.prepare("SELECT path FROM installations")?;
+            let paths = query
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            paths
+        };
+        for value in paths {
+            let path = PathBuf::from(value);
+            if roots.iter().any(|root| path.starts_with(root))
+                && !exclusions.iter().any(|excluded| path.starts_with(excluded))
+            {
+                let available = seen_paths.contains(&path);
+                tx.execute(
+                    "UPDATE installations SET available=?2 WHERE path=?1",
+                    params![path.to_string_lossy(), available],
+                )?;
+            }
         }
         tx.commit()
     }
@@ -224,5 +239,82 @@ mod tests {
         let loaded = store.games().unwrap();
         assert!(loaded[0].favorite);
         assert_eq!(loaded[0].installations.len(), 2);
+    }
+
+    #[test]
+    fn unknown_scan_does_not_downgrade_known_metadata_or_user_category() {
+        let temp = tempdir().unwrap();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        let install = Installation {
+            path: PathBuf::from("/games/celeste"),
+            launcher: Launcher::Steam,
+            launch_profile: None,
+            available: true,
+        };
+        let game = Game::from_installation("Celeste", "Steam", install.clone());
+        store.save_game(&game).unwrap();
+        store.set_category(&game.id, "Plateforme").unwrap();
+        store
+            .save_game(&Game::from_installation(
+                "celeste",
+                "À confirmer",
+                Installation {
+                    path: install.path.clone(),
+                    launcher: Launcher::Unknown,
+                    launch_profile: None,
+                    available: true,
+                },
+            ))
+            .unwrap();
+        let loaded_games = store.games().unwrap();
+        let loaded = &loaded_games[0];
+        assert_eq!(loaded.category, "Plateforme");
+        assert_eq!(loaded.installations[0].launcher, Launcher::Steam);
+        assert!(loaded.confirmed);
+    }
+
+    #[test]
+    fn rescanning_one_root_marks_only_unseen_installations_unavailable() {
+        let temp = tempdir().unwrap();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        let inside = temp.path().join("games/a");
+        let outside = PathBuf::from("/other-drive/games/b");
+        let mut game = Game::from_installation(
+            "A",
+            "Steam",
+            Installation {
+                path: inside.clone(),
+                launcher: Launcher::Steam,
+                launch_profile: None,
+                available: true,
+            },
+        );
+        game.installations.push(Installation {
+            path: outside.clone(),
+            launcher: Launcher::Manual,
+            launch_profile: None,
+            available: true,
+        });
+        store.save_game(&game).unwrap();
+        store
+            .mark_unseen_under_roots_unavailable(&[temp.path().to_path_buf()], &[], &[])
+            .unwrap();
+        let loaded = store.games().unwrap();
+        assert!(
+            !loaded[0]
+                .installations
+                .iter()
+                .find(|i| i.path == inside)
+                .unwrap()
+                .available
+        );
+        assert!(
+            loaded[0]
+                .installations
+                .iter()
+                .find(|i| i.path == outside)
+                .unwrap()
+                .available
+        );
     }
 }

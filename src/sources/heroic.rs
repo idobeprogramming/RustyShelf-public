@@ -55,6 +55,18 @@ pub fn discover() -> Vec<Game> {
                 Launcher::Heroic
             };
             let executable = find_string(&json, &["executable", "launchExecutable", "exe"]);
+            let app_name = find_string(&json, &["app_name", "appName", "app_id", "appId"]);
+            let runner = if launcher == Launcher::Gog {
+                "gog"
+            } else {
+                "legendary"
+            };
+            let launch_uri = app_name.map(|id| {
+                format!(
+                    "heroic://launch?appName={}&runner={runner}",
+                    id.replace(' ', "%20")
+                )
+            });
             let profile = executable.map(|exe| {
                 let command = PathBuf::from(exe);
                 let command = if command.is_absolute() {
@@ -66,7 +78,7 @@ pub fn discover() -> Vec<Game> {
                     command,
                     arguments: Vec::new(),
                     working_directory: Some(install.clone()),
-                    launcher_command: None,
+                    launcher_command: launch_uri,
                 }
             });
             result.push(Game::from_installation(

@@ -29,6 +29,8 @@ pub fn discover() -> Vec<Game> {
             let name = yaml_scalar(&text, "name")
                 .or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()));
             let Some(name) = name else { continue };
+            let slug = yaml_scalar(&text, "game_slug")
+                .or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()));
             let executable = yaml_scalar(&text, "exe").or_else(|| yaml_scalar(&text, "executable"));
             let profile = executable.map(|exe| {
                 let command = expand_home(exe);
@@ -37,7 +39,7 @@ pub fn discover() -> Vec<Game> {
                     command,
                     arguments: Vec::new(),
                     working_directory,
-                    launcher_command: Some("lutris".into()),
+                    launcher_command: slug.map(|slug| format!("lutris:{slug}")),
                 }
             });
             let install = profile

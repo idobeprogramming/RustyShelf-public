@@ -73,11 +73,10 @@ impl Game {
     }
 }
 
-pub fn stable_id(title: &str, path: &std::path::Path) -> String {
+pub fn stable_id(title: &str, _path: &std::path::Path) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     title.to_lowercase().hash(&mut hasher);
-    path.to_string_lossy().to_lowercase().hash(&mut hasher);
     format!("{:016x}", hasher.finish())
 }
 
