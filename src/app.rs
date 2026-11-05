@@ -497,6 +497,10 @@ impl RustyShelfApp {
             control.cancel();
             return;
         }
+        if self.store.is_none() {
+            self.persist(|_| Ok(()));
+            return;
+        }
         let roots: Vec<_> = self
             .volumes
             .iter()
@@ -522,21 +526,12 @@ impl RustyShelfApp {
         let (sender, receiver) = mpsc::sync_channel(64);
         std::thread::spawn(move || {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let games =
+                    sources::within_scan_scope(sources::discover(&roots), &roots, &exclusions);
                 let mut scan_exclusions = exclusions;
-                for mut game in sources::discover(&roots) {
+                for game in games {
                     if worker_control.is_cancelled() {
                         break;
-                    }
-                    game.installations.retain(|installation| {
-                        roots
-                            .iter()
-                            .any(|root| scan::path_is_within(&installation.path, root))
-                            && !scan_exclusions
-                                .iter()
-                                .any(|excluded| scan::path_is_within(&installation.path, excluded))
-                    });
-                    if game.installations.is_empty() {
-                        continue;
                     }
                     scan_exclusions.extend(
                         game.installations
@@ -548,7 +543,9 @@ impl RustyShelfApp {
                     }
                 }
                 scan::scan_roots(&roots, &scan_exclusions, &worker_control, |event| {
-                    let _ = sender.send(event);
+                    if sender.send(event).is_err() {
+                        worker_control.cancel();
+                    }
                 });
             }));
             if outcome.is_err() {
@@ -565,6 +562,7 @@ impl RustyShelfApp {
         self.scan_control = Some(control);
         self.scan_receiver = Some(receiver);
         self.scan_visited = 0;
+        self.scan_current.clear();
         self.diagnostics = ScanDiagnostics::default();
         self.status = tr(
             self.language,
@@ -579,7 +577,30 @@ impl RustyShelfApp {
         let Some(receiver) = &self.scan_receiver else {
             return;
         };
-        let events: Vec<_> = receiver.try_iter().take(8).collect();
+        let mut events = Vec::new();
+        for _ in 0..8 {
+            match receiver.try_recv() {
+                Ok(event) => {
+                    let finished = matches!(event, ScanEvent::Finished { .. });
+                    events.push(event);
+                    if finished {
+                        break;
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    events.push(ScanEvent::Error(
+                        PathBuf::new(),
+                        "Le processus de scan s’est arrêté sans terminer.".into(),
+                    ));
+                    events.push(ScanEvent::Finished {
+                        visited: self.scan_visited,
+                        cancelled: true,
+                    });
+                    break;
+                }
+            }
+        }
         for event in events {
             match event {
                 ScanEvent::Candidate(mut game) => {
@@ -593,8 +614,13 @@ impl RustyShelfApp {
                             self.diagnostics.error(error.to_string());
                             continue;
                         }
-                        if store.is_ignored(&game.id).unwrap_or(false) {
-                            continue;
+                        match store.is_ignored(&game.id) {
+                            Ok(true) => continue,
+                            Ok(false) => {}
+                            Err(error) => {
+                                self.diagnostics.error(error.to_string());
+                                continue;
+                            }
                         }
                         if let Err(error) = store.save_game(&game) {
                             self.diagnostics.error(error.to_string());
@@ -621,8 +647,8 @@ impl RustyShelfApp {
                 }
                 ScanEvent::Finished { visited, cancelled } => {
                     self.scan_visited = visited;
-                    if !cancelled {
-                        if let Some(store) = &self.store {
+                    if let Some(store) = &self.store {
+                        if !cancelled {
                             if let Err(error) = store.mark_unseen_under_roots_unavailable(
                                 &self.scan_roots,
                                 &self.scan_exclusions,
@@ -630,10 +656,12 @@ impl RustyShelfApp {
                             ) {
                                 self.diagnostics.error(error.to_string());
                             }
-                            match store.games() {
-                                Ok(games) => self.games = deduplicate_library(games),
-                                Err(error) => self.diagnostics.error(error.to_string()),
-                            }
+                        }
+                        // Even a cancelled scan saved partial results. Reload the
+                        // preserved user metadata, but never mark unseen games missing.
+                        match store.games() {
+                            Ok(games) => self.games = deduplicate_library(games),
+                            Err(error) => self.diagnostics.error(error.to_string()),
                         }
                     }
                     self.scan_control = None;
@@ -2113,6 +2141,14 @@ fn launch_uri_handler(uri: &str) -> std::io::Result<()> {
     }
 }
 
+impl Drop for RustyShelfApp {
+    fn drop(&mut self) {
+        if let Some(control) = &self.scan_control {
+            control.cancel();
+        }
+    }
+}
+
 impl eframe::App for RustyShelfApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_scan(ctx);
@@ -2196,6 +2232,54 @@ mod tests {
             console_overrides: HashMap::new(),
             console_emulators: HashMap::new(),
         }
+    }
+
+    #[test]
+    fn interrupted_scan_reloads_saved_corrections_without_marking_games_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        let mut app = test_app();
+        let game = app.games[0].clone();
+        store.save_game(&game).unwrap();
+        store.set_category(&game.id, "Mes aventures").unwrap();
+        store.set_favorite(&game.id, true).unwrap();
+        app.store = Some(store);
+        app.scan_roots = vec!["/roms".into()];
+        for abrupt in [false, true] {
+            app.games = vec![game.clone()];
+            let (sender, receiver) = mpsc::sync_channel(4);
+            sender.send(ScanEvent::Candidate(game.clone())).unwrap();
+            if !abrupt {
+                sender
+                    .send(ScanEvent::Finished {
+                        visited: 20,
+                        cancelled: true,
+                    })
+                    .unwrap();
+            }
+            drop(sender);
+            app.scan_receiver = Some(receiver);
+            app.scan_control = Some(ScanControl::default());
+            app.poll_scan(&egui::Context::default());
+            assert!(app.scan_receiver.is_none());
+            assert!(app.scan_control.is_none());
+            assert_eq!(app.games[0].category, "Mes aventures");
+            assert!(app.games[0].favorite);
+            assert!(app.games[0].installations[0].available);
+            assert_eq!(app.diagnostics.error_count, usize::from(abrupt));
+        }
+    }
+
+    #[test]
+    fn closing_app_cancels_the_worker_and_scan_requires_storage() {
+        let mut app = test_app();
+        app.start_scan();
+        assert!(app.scan_control.is_none());
+        assert!(app.status.contains("Base locale indisponible"));
+        let control = ScanControl::default();
+        app.scan_control = Some(control.clone());
+        drop(app);
+        assert!(control.is_cancelled());
     }
 
     #[test]
