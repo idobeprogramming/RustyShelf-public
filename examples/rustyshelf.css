@@ -1,0 +1,11 @@
+/* RustyShelf - personnalisation locale. Importer dans Options > Style CSS. */
+:root {
+  --background: #15191f;
+  --surface: #202630;
+  --card: #252e39;
+  --accent: #e5a270;
+  --text: #f5f0e9;
+  --muted: #aeb8c5;
+  --radius: 12px;
+  --gap: 10px;
+}
