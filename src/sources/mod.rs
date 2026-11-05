@@ -46,12 +46,14 @@ fn relative_path(root: &Path, value: &str) -> Result<PathBuf, String> {
 }
 
 pub fn is_manifest(path: &Path) -> bool {
-    steam::is_manifest(path)
+    steam::is_manifest(path) || gog::is_manifest(path)
 }
 
 pub fn from_manifest(path: &Path) -> Result<Option<Game>, String> {
     if steam::is_manifest(path) {
         steam::read_manifest(path)
+    } else if gog::is_manifest(path) {
+        gog::read_manifest(path)
     } else {
         Ok(None)
     }
