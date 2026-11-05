@@ -6,6 +6,12 @@ pub struct Store {
     connection: Connection,
 }
 
+#[derive(Clone, Copy)]
+pub enum ReviewAction {
+    Confirm,
+    Ignore,
+}
+
 impl Store {
     pub fn open_default() -> rusqlite::Result<Self> {
         let base = dirs::data_local_dir().unwrap_or_else(std::env::temp_dir);
@@ -322,6 +328,21 @@ impl Store {
         Ok(())
     }
 
+    pub fn review_games(&self, ids: &[String], action: ReviewAction) -> rusqlite::Result<()> {
+        let tx = self.connection.unchecked_transaction()?;
+        let sql = match action {
+            ReviewAction::Confirm => "UPDATE games SET confirmed=1 WHERE id=?1 AND confirmed=0 AND NOT EXISTS (SELECT 1 FROM ignored_games WHERE game_id=games.id)",
+            ReviewAction::Ignore => "INSERT OR IGNORE INTO ignored_games(game_id) SELECT id FROM games WHERE id=?1 AND confirmed=0",
+        };
+        {
+            let mut statement = tx.prepare(sql)?;
+            for id in ids {
+                statement.execute([id])?;
+            }
+        }
+        tx.commit()
+    }
+
     pub fn ignore_game(&self, id: &str) -> rusqlite::Result<()> {
         self.connection.execute(
             "INSERT OR IGNORE INTO ignored_games(game_id) VALUES(?1)",
@@ -445,6 +466,40 @@ fn parse_launcher(value: &str) -> Launcher {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn batch_review_is_atomic_and_never_modifies_confirmed_games() {
+        let temp = tempdir().unwrap();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        store
+            .connection
+            .execute_batch(
+                "INSERT INTO games(id,title,category,confirmed) VALUES
+            ('a','A','Test',0),('b','B','Test',0),('c','C','Test',1);",
+            )
+            .unwrap();
+        let ids = vec!["a".into(), "b".into(), "c".into(), "missing".into()];
+        store.review_games(&ids, ReviewAction::Ignore).unwrap();
+        assert_eq!(
+            store
+                .games()
+                .unwrap()
+                .iter()
+                .map(|game| game.id.as_str())
+                .collect::<Vec<_>>(),
+            ["c"]
+        );
+        store.restore_ignored_games().unwrap();
+        store.connection.execute_batch("CREATE TRIGGER reject_b BEFORE UPDATE ON games WHEN NEW.id='b' BEGIN SELECT RAISE(ABORT,'refus'); END;").unwrap();
+        assert!(store.review_games(&ids, ReviewAction::Confirm).is_err());
+        assert!(!store.games().unwrap()[0].confirmed);
+        store
+            .connection
+            .execute_batch("DROP TRIGGER reject_b;")
+            .unwrap();
+        store.review_games(&ids, ReviewAction::Confirm).unwrap();
+        assert!(store.games().unwrap().iter().all(|game| game.confirmed));
+    }
 
     #[test]
     fn large_library_keeps_installations_and_ignored_games_consistent() {

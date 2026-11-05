@@ -4,12 +4,12 @@ use crate::{
     model::{Emulator, Game, Installation, LaunchProfile, Launcher},
     scan::{self, ScanControl, ScanEvent, Volume},
     sources,
-    store::Store,
+    store::{ReviewAction, Store},
     style::CustomStyle,
 };
 use eframe::egui::{self, Color32, RichText, TextureHandle, Vec2};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     process::Command,
     sync::mpsc::{self, Receiver},
@@ -193,6 +193,7 @@ pub struct RustyShelfApp {
     show_options: bool,
     games: Vec<Game>,
     selected_game: Option<String>,
+    review_selection: HashSet<String>,
     store: Option<Store>,
     status: String,
     volumes: Vec<Volume>,
@@ -306,6 +307,7 @@ impl RustyShelfApp {
                 .find(|game| game.confirmed)
                 .or_else(|| games.first())
                 .map(|game| game.id.clone()),
+            review_selection: HashSet::new(),
             games,
             store,
             status,
@@ -387,6 +389,34 @@ impl RustyShelfApp {
             }
         }
         true
+    }
+
+    fn apply_review_selection(&mut self, action: ReviewAction) {
+        let ids: Vec<String> = self
+            .games
+            .iter()
+            .filter(|game| !game.confirmed && self.review_selection.contains(&game.id))
+            .map(|game| game.id.clone())
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        if self.update_library(|store| store.review_games(&ids, action)) {
+            self.review_selection.clear();
+            self.status = format!(
+                "{} {}",
+                ids.len(),
+                match action {
+                    ReviewAction::Confirm =>
+                        tr(self.language, "jeu(x) confirmé(s).", "game(s) confirmed."),
+                    ReviewAction::Ignore => tr(
+                        self.language,
+                        "élément(s) ignoré(s). Aucun fichier supprimé.",
+                        "item(s) ignored. No files deleted."
+                    ),
+                }
+            );
+        }
     }
 
     fn game_console<'a>(&'a self, game: &Game) -> Option<&'a str> {
@@ -1043,6 +1073,12 @@ impl RustyShelfApp {
         if self.filters.sort == Sort::ReverseName {
             filtered.reverse();
         }
+        let review_ids: HashSet<_> = filtered
+            .iter()
+            .filter(|game| !game.confirmed)
+            .map(|game| &game.id)
+            .collect();
+        self.review_selection.retain(|id| review_ids.contains(id));
         if !filtered
             .iter()
             .any(|game| self.selected_game.as_ref() == Some(&game.id))
@@ -1129,6 +1165,24 @@ impl RustyShelfApp {
                 }
             });
             self.filter_bar(ui);
+            if self.selected_category == "À confirmer" {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(tr(self.language, "Sélectionner les résultats", "Select results")).clicked() {
+                        self.review_selection = review_ids.iter().map(|id| (*id).clone()).collect();
+                    }
+                    if ui.button(tr(self.language, "Désélectionner", "Clear selection")).clicked() {
+                        self.review_selection.clear();
+                    }
+                    let count = self.review_selection.len();
+                    if ui.add_enabled(count > 0, egui::Button::new(format!("{} ({count})", tr(self.language, "Confirmer", "Confirm")))).clicked() {
+                        self.apply_review_selection(ReviewAction::Confirm);
+                    }
+                    if ui.add_enabled(count > 0, egui::Button::new(format!("{} ({count})", tr(self.language, "Ignorer", "Ignore")))).clicked() {
+                        self.apply_review_selection(ReviewAction::Ignore);
+                    }
+                });
+                ui.small(tr(self.language, "Coche les éléments à traiter. Les éléments ignorés restent restaurables dans les options.", "Check items to process. Ignored items can be restored in settings."));
+            }
             if let Some(console) = self
                 .selected_category
                 .strip_prefix("console:")
@@ -1216,7 +1270,7 @@ impl RustyShelfApp {
                                     }
                                     let selected = self.selected_game.as_deref() == Some(&game.id);
                                     let texture = self.load_cover(ctx, game);
-                                    let painter = ui.painter();
+                                    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
                                     painter.rect_filled(rect, radius, card);
                                     if selected || response.hovered() {
                                         painter.rect_stroke(
@@ -1309,6 +1363,17 @@ impl RustyShelfApp {
                                     response.clone().on_hover_text(&game.title);
                                     if response.clicked() {
                                         self.selected_game = Some(game.id.clone());
+                                    }
+                                    if !game.confirmed {
+                                        let mut checked = self.review_selection.contains(&game.id);
+                                        let check_rect = egui::Rect::from_min_size(rect.min + Vec2::splat(12.0), Vec2::splat(24.0));
+                                        let mut check_ui = ui.new_child(egui::UiBuilder::new()
+                                            .id_salt(("review-select", &game.id)).max_rect(check_rect)
+                                            .layout(egui::Layout::top_down(egui::Align::Min)));
+                                        if check_ui.add(egui::Checkbox::without_text(&mut checked)).changed() {
+                                            if checked { self.review_selection.insert(game.id.clone()); }
+                                            else { self.review_selection.remove(&game.id); }
+                                        }
                                     }
                                 }
                             });
@@ -2280,6 +2345,7 @@ mod tests {
             show_options: false,
             games,
             selected_game: None,
+            review_selection: HashSet::new(),
             store: None,
             status: "Hors ligne".into(),
             volumes: vec![],
@@ -2343,6 +2409,35 @@ mod tests {
             assert!(app.games[0].installations[0].available);
             assert_eq!(app.diagnostics.error_count, usize::from(abrupt));
         }
+    }
+
+    #[test]
+    fn review_selection_respects_filters_and_can_confirm_multiple_candidates() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = test_app();
+        app.games.truncate(2);
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        for game in &mut app.games {
+            game.confirmed = false;
+            store.save_game(game).unwrap();
+            app.review_selection.insert(game.id.clone());
+        }
+        app.store = Some(store);
+        app.selected_category = "À confirmer".into();
+        app.search = "Adventure 0".into();
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| app.content(ctx));
+        assert_eq!(app.review_selection.len(), 1);
+        app.apply_review_selection(ReviewAction::Confirm);
+        assert!(app.review_selection.is_empty());
+        assert_eq!(app.games.iter().filter(|game| game.confirmed).count(), 1);
+        app.search.clear();
+        for game in &app.games {
+            app.review_selection.insert(game.id.clone());
+        }
+        app.apply_review_selection(ReviewAction::Ignore);
+        assert_eq!(app.games.len(), 1);
+        assert!(app.games[0].confirmed);
     }
 
     #[test]
