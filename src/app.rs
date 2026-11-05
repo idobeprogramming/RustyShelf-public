@@ -517,6 +517,21 @@ impl RustyShelfApp {
             .into();
             return;
         }
+        self.begin_scan(roots, true);
+    }
+
+    fn begin_scan(&mut self, roots: Vec<PathBuf>, include_launcher_catalogs: bool) {
+        if self.scan_control.is_some() {
+            return;
+        }
+        if self.store.is_none() {
+            self.persist(|_| Ok(()));
+            return;
+        }
+        let roots = scan::unique_roots(&roots);
+        if roots.is_empty() {
+            return;
+        }
         let exclusions = self.exclusions.clone();
         self.scan_roots = roots.clone();
         self.scan_exclusions = exclusions.clone();
@@ -526,11 +541,15 @@ impl RustyShelfApp {
         let (sender, receiver) = mpsc::sync_channel(64);
         std::thread::spawn(move || {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let discovered = sources::discover(&roots, &worker_control, &mut |event| {
-                    if sender.send(event).is_err() {
-                        worker_control.cancel();
-                    }
-                });
+                let discovered = if include_launcher_catalogs {
+                    sources::discover(&roots, &worker_control, &mut |event| {
+                        if sender.send(event).is_err() {
+                            worker_control.cancel();
+                        }
+                    })
+                } else {
+                    Vec::new()
+                };
                 let games = sources::within_scan_scope(discovered, &roots, &exclusions);
                 let mut scan_exclusions = exclusions;
                 for game in games {
@@ -1800,6 +1819,12 @@ impl RustyShelfApp {
                 }
                 ui.separator();
                 ui.heading(tr(self.language, "Scanner", "Scanner"));
+                if ui.add_enabled(self.scan_control.is_none(), egui::Button::new(tr(self.language, "Scanner un dossier…", "Scan a folder…"))).clicked() {
+                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                        self.begin_scan(vec![path], false);
+                    }
+                }
+                ui.small(tr(self.language, "Le scan d’un dossier analyse seulement son contenu, sans parcourir les autres disques.", "Folder scans only examine that folder, without traversing other drives."));
                 if ui.add_enabled(self.scan_control.is_none(), egui::Button::new(tr(self.language, "Actualiser les disques", "Refresh drives"))).clicked() {
                     let selected: Vec<PathBuf> = self.volumes.iter().zip(&self.selected_volumes).filter(|(_, selected)| **selected).map(|(volume, _)| volume.root.clone()).collect();
                     self.volumes = scan::mounted_volumes();
@@ -2281,6 +2306,44 @@ mod tests {
             assert!(app.games[0].installations[0].available);
             assert_eq!(app.diagnostics.error_count, usize::from(abrupt));
         }
+    }
+
+    #[test]
+    fn folder_scan_runs_to_completion_and_preserves_games_outside_its_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        let chosen = temp.path().join("roms");
+        std::fs::create_dir(&chosen).unwrap();
+        std::fs::write(chosen.join("Étoiles.nes"), []).unwrap();
+        let mut app = test_app();
+        let outside = app.games[0].clone();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        store.save_game(&outside).unwrap();
+        app.store = Some(store);
+        app.begin_scan(vec![chosen.clone()], false);
+        let ctx = egui::Context::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.scan_control.is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Le scan ne se termine pas"
+            );
+            app.poll_scan(&ctx);
+            std::thread::yield_now();
+        }
+        assert_eq!(app.scan_roots, [chosen]);
+        assert_eq!(app.diagnostics.error_count, 0);
+        assert!(app
+            .games
+            .iter()
+            .any(|game| game.title == "Étoiles" && !game.confirmed));
+        assert!(
+            app.games
+                .iter()
+                .find(|game| game.id == outside.id)
+                .unwrap()
+                .installations[0]
+                .available
+        );
     }
 
     #[test]
