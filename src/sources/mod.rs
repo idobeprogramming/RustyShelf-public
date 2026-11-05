@@ -5,6 +5,7 @@ mod lutris;
 mod steam;
 
 use crate::model::Game;
+use crate::scan::{ScanControl, ScanEvent, ScanProgress};
 use std::path::{Path, PathBuf};
 
 pub fn read_manifest_text(path: &Path) -> Result<String, String> {
@@ -19,6 +20,16 @@ pub fn read_manifest_text(path: &Path) -> Result<String, String> {
         return Err("Manifeste trop volumineux (limite de 4 Mo)".into());
     }
     Ok(text)
+}
+
+fn read_or_report(path: &Path, report: &mut dyn FnMut(ScanEvent)) -> Option<String> {
+    match read_manifest_text(path) {
+        Ok(text) => Some(text),
+        Err(error) => {
+            report(ScanEvent::Error(path.to_owned(), error));
+            None
+        }
+    }
 }
 
 fn numeric_id(id: &str) -> bool {
@@ -59,13 +70,28 @@ pub fn from_manifest(path: &Path) -> Result<Option<Game>, String> {
     }
 }
 
-pub fn discover(roots: &[PathBuf]) -> Vec<Game> {
+pub fn discover(
+    roots: &[PathBuf],
+    control: &ScanControl,
+    report: &mut dyn FnMut(ScanEvent),
+) -> Vec<Game> {
     let mut games = Vec::new();
-    games.extend(steam::discover(roots));
-    games.extend(epic::discover());
-    games.extend(heroic::discover());
-    games.extend(lutris::discover());
-    games.extend(gog::discover());
+    for source in ["Steam", "Epic Games", "Heroic", "Lutris", "GOG"] {
+        if control.is_cancelled() {
+            break;
+        }
+        report(ScanEvent::Progress(ScanProgress {
+            visited: 0,
+            current: source.into(),
+        }));
+        games.extend(match source {
+            "Steam" => steam::discover(roots, control, report),
+            "Epic Games" => epic::discover(control, report),
+            "Heroic" => heroic::discover(control, report),
+            "Lutris" => lutris::discover(control, report),
+            _ => gog::discover(control, report),
+        });
+    }
     games.sort_by_key(|game| game.title.to_lowercase());
     // The store merges titles while preserving every installation and launcher profile.
     games
@@ -96,6 +122,41 @@ pub fn within_scan_scope(
 mod tests {
     use super::*;
     use crate::model::{Installation, Launcher};
+
+    #[test]
+    fn cancellation_stops_discovery_before_reading_any_user_library() {
+        let control = ScanControl::default();
+        control.cancel();
+        assert!(discover(&[], &control, &mut |_| panic!(
+            "Cancelled scan emitted an event"
+        ))
+        .is_empty());
+        let control = ScanControl::default();
+        let mut events = 0;
+        let games = discover(&[], &control, &mut |_| {
+            events += 1;
+            control.cancel();
+        });
+        assert!(games.is_empty());
+        assert_eq!(events, 1);
+    }
+
+    #[test]
+    fn unreadable_and_oversized_manifests_are_reported_without_unbounded_reads() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("missing.json");
+        let mut errors = Vec::new();
+        assert!(read_or_report(&path, &mut |event| {
+            if let ScanEvent::Error(path, _) = event {
+                errors.push(path);
+            }
+        })
+        .is_none());
+        assert_eq!(errors, [path]);
+        let large = temp.path().join("large.json");
+        std::fs::write(&large, vec![b' '; 4 * 1024 * 1024 + 1]).unwrap();
+        assert!(read_manifest_text(&large).unwrap_err().contains("4 Mo"));
+    }
 
     #[test]
     fn shared_launcher_folders_do_not_hide_records_but_user_exclusions_do() {

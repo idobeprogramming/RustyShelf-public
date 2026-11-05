@@ -526,8 +526,12 @@ impl RustyShelfApp {
         let (sender, receiver) = mpsc::sync_channel(64);
         std::thread::spawn(move || {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let games =
-                    sources::within_scan_scope(sources::discover(&roots), &roots, &exclusions);
+                let discovered = sources::discover(&roots, &worker_control, &mut |event| {
+                    if sender.send(event).is_err() {
+                        worker_control.cancel();
+                    }
+                });
+                let games = sources::within_scan_scope(discovered, &roots, &exclusions);
                 let mut scan_exclusions = exclusions;
                 for game in games {
                     if worker_control.is_cancelled() {

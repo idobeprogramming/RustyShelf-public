@@ -1,10 +1,15 @@
 use crate::model::{Game, Installation, LaunchProfile, Launcher};
+use crate::scan::{ScanControl, ScanEvent};
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 
-pub fn discover(roots: &[PathBuf]) -> Vec<Game> {
+pub fn discover(
+    roots: &[PathBuf],
+    control: &ScanControl,
+    report: &mut dyn FnMut(ScanEvent),
+) -> Vec<Game> {
     let mut steamapps = default_steamapps();
     steamapps.extend(
         roots
@@ -14,12 +19,20 @@ pub fn discover(roots: &[PathBuf]) -> Vec<Game> {
     let mut result = Vec::new();
     let mut index = 0;
     while index < steamapps.len() {
+        if control.is_cancelled() {
+            break;
+        }
         let library = steamapps[index].clone();
         index += 1;
         if !library.is_dir() {
             continue;
         }
-        if let Ok(vdf) = fs::read_to_string(library.join("libraryfolders.vdf")) {
+        if let Some(vdf) = library
+            .join("libraryfolders.vdf")
+            .is_file()
+            .then(|| super::read_or_report(&library.join("libraryfolders.vdf"), report))
+            .flatten()
+        {
             for line in vdf.lines().filter(|line| line.contains("\"path\"")) {
                 if let Some(path) = value(line, "path") {
                     let candidate = PathBuf::from(path.replace("\\\\", "\\")).join("steamapps");
@@ -33,10 +46,15 @@ pub fn discover(roots: &[PathBuf]) -> Vec<Game> {
             continue;
         };
         for entry in entries.flatten() {
+            if control.is_cancelled() {
+                break;
+            }
             let path = entry.path();
             if is_manifest(&path) {
-                if let Ok(Some(game)) = read_manifest(&path) {
-                    result.push(game);
+                match read_manifest(&path) {
+                    Ok(Some(game)) => result.push(game),
+                    Ok(None) => {}
+                    Err(error) => report(ScanEvent::Error(path, error)),
                 }
             }
         }

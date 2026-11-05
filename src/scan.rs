@@ -51,6 +51,18 @@ pub fn path_is_within(path: &Path, root: &Path) -> bool {
     }
 }
 
+pub fn unique_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut result: Vec<PathBuf> = Vec::new();
+    for root in roots {
+        if root.as_os_str().is_empty() || result.iter().any(|parent| path_is_within(root, parent)) {
+            continue;
+        }
+        result.retain(|child| !path_is_within(child, root));
+        result.push(root.clone());
+    }
+    result
+}
+
 #[derive(Clone, Debug)]
 pub struct ScanProgress {
     pub visited: usize,
@@ -84,7 +96,7 @@ pub fn scan_roots(
     mut emit: impl FnMut(ScanEvent),
 ) {
     let mut visited = 0;
-    for root in roots {
+    for root in &unique_roots(roots) {
         if control.is_cancelled() {
             break;
         }
@@ -438,6 +450,38 @@ mod tests {
     use super::*;
     use std::{fs, sync::mpsc};
     use tempfile::tempdir;
+
+    #[test]
+    fn overlapping_roots_are_scanned_once_and_cancellation_stops_after_a_candidate() {
+        let temp = tempdir().unwrap();
+        let roms = temp.path().join("roms");
+        fs::create_dir(&roms).unwrap();
+        for index in 0..5 {
+            fs::write(roms.join(format!("game{index}.nes")), []).unwrap();
+        }
+        let roots = [roms, temp.path().to_owned(), temp.path().to_owned()];
+        assert_eq!(unique_roots(&roots), [temp.path().to_owned()]);
+        for cancel in [false, true] {
+            let control = ScanControl::default();
+            let mut count = 0;
+            let mut finished = false;
+            scan_roots(&roots, &[], &control, |event| match event {
+                ScanEvent::Candidate(_) => {
+                    count += 1;
+                    if cancel {
+                        control.cancel();
+                    }
+                }
+                ScanEvent::Finished { cancelled, .. } => {
+                    finished = true;
+                    assert_eq!(cancelled, cancel);
+                }
+                _ => {}
+            });
+            assert!(finished);
+            assert_eq!(count, if cancel { 1 } else { 5 });
+        }
+    }
 
     #[test]
     fn finds_custom_steam_libraries_and_reports_invalid_manifests() {

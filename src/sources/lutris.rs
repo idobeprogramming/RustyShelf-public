@@ -1,7 +1,8 @@
 use crate::model::{Game, Installation, LaunchProfile, Launcher};
+use crate::scan::{ScanControl, ScanEvent};
 use std::{fs, path::PathBuf};
 
-pub fn discover() -> Vec<Game> {
+pub fn discover(control: &ScanControl, report: &mut dyn FnMut(ScanEvent)) -> Vec<Game> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
@@ -11,10 +12,16 @@ pub fn discover() -> Vec<Game> {
     ];
     let mut result = Vec::new();
     for root in roots {
+        if control.is_cancelled() {
+            break;
+        }
         let Ok(entries) = fs::read_dir(root) else {
             continue;
         };
         for entry in entries.flatten() {
+            if control.is_cancelled() {
+                break;
+            }
             let path = entry.path();
             if !path
                 .extension()
@@ -23,7 +30,7 @@ pub fn discover() -> Vec<Game> {
             {
                 continue;
             }
-            let Ok(text) = fs::read_to_string(&path) else {
+            let Some(text) = super::read_or_report(&path, report) else {
                 continue;
             };
             let name = yaml_scalar(&text, "name")

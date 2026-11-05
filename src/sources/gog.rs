@@ -1,11 +1,12 @@
 use crate::model::{Game, Installation, LaunchProfile, Launcher};
+use crate::scan::{ScanControl, ScanEvent};
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 use walkdir::WalkDir;
 
-pub fn discover() -> Vec<Game> {
+pub fn discover(control: &ScanControl, report: &mut dyn FnMut(ScanEvent)) -> Vec<Game> {
     let mut roots = Vec::new();
     #[cfg(windows)]
     {
@@ -21,10 +22,16 @@ pub fn discover() -> Vec<Game> {
     }
     let mut result = Vec::new();
     for root in roots {
+        if control.is_cancelled() {
+            break;
+        }
         let Ok(entries) = fs::read_dir(&root) else {
             continue;
         };
         for entry in entries.flatten().filter(|e| e.path().is_dir()) {
+            if control.is_cancelled() {
+                break;
+            }
             let install = entry.path();
             for entry in WalkDir::new(&install)
                 .max_depth(2)
@@ -32,9 +39,14 @@ pub fn discover() -> Vec<Game> {
                 .into_iter()
                 .filter_map(Result::ok)
             {
+                if control.is_cancelled() {
+                    break;
+                }
                 if is_manifest(entry.path()) {
-                    if let Ok(Some(game)) = read_manifest(entry.path()) {
-                        result.push(game);
+                    match read_manifest(entry.path()) {
+                        Ok(Some(game)) => result.push(game),
+                        Ok(None) => {}
+                        Err(error) => report(ScanEvent::Error(entry.path().to_owned(), error)),
                     }
                 }
             }

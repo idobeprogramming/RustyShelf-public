@@ -1,8 +1,9 @@
 use crate::model::{Game, Installation, LaunchProfile, Launcher};
-use std::{fs, path::PathBuf};
+use crate::scan::{ScanControl, ScanEvent};
+use std::path::PathBuf;
 use walkdir::WalkDir;
 
-pub fn discover() -> Vec<Game> {
+pub fn discover(control: &ScanControl, report: &mut dyn FnMut(ScanEvent)) -> Vec<Game> {
     let mut roots = Vec::new();
     if let Some(home) = dirs::home_dir() {
         roots.extend([
@@ -18,22 +19,32 @@ pub fn discover() -> Vec<Game> {
     }
     let mut result = Vec::new();
     for root in roots {
+        if control.is_cancelled() {
+            break;
+        }
         for entry in WalkDir::new(root)
             .max_depth(4)
             .follow_links(false)
             .into_iter()
             .filter_map(Result::ok)
         {
+            if control.is_cancelled() {
+                break;
+            }
             if !entry.file_type().is_file()
                 || entry.path().extension().and_then(|s| s.to_str()) != Some("json")
             {
                 continue;
             }
-            let Ok(text) = fs::read_to_string(entry.path()) else {
+            let Some(text) = super::read_or_report(entry.path(), report) else {
                 continue;
             };
-            let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-                continue;
+            let json = match serde_json::from_str::<serde_json::Value>(&text) {
+                Ok(json) => json,
+                Err(error) => {
+                    report(ScanEvent::Error(entry.path().to_owned(), error.to_string()));
+                    continue;
+                }
             };
             let gog = entry
                 .path()
@@ -135,6 +146,7 @@ fn uri_component(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::tempdir;
 
     #[test]

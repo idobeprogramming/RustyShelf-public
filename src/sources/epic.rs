@@ -1,7 +1,8 @@
 use crate::model::{Game, Installation, LaunchProfile, Launcher};
+use crate::scan::{ScanControl, ScanEvent};
 use std::{fs, path::PathBuf};
 
-pub fn discover() -> Vec<Game> {
+pub fn discover(control: &ScanControl, report: &mut dyn FnMut(ScanEvent)) -> Vec<Game> {
     let mut roots = Vec::new();
     #[cfg(windows)]
     {
@@ -20,21 +21,31 @@ pub fn discover() -> Vec<Game> {
     }
     let mut result = Vec::new();
     for root in roots {
+        if control.is_cancelled() {
+            break;
+        }
         let Ok(entries) = fs::read_dir(root) else {
             continue;
         };
         for entry in entries.flatten() {
+            if control.is_cancelled() {
+                break;
+            }
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) != Some("item")
                 && path.extension().and_then(|s| s.to_str()) != Some("json")
             {
                 continue;
             }
-            let Ok(text) = fs::read_to_string(&path) else {
+            let Some(text) = super::read_or_report(&path, report) else {
                 continue;
             };
-            let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-                continue;
+            let json = match serde_json::from_str::<serde_json::Value>(&text) {
+                Ok(json) => json,
+                Err(error) => {
+                    report(ScanEvent::Error(path.clone(), error.to_string()));
+                    continue;
+                }
             };
             let Some(title) = json
                 .get("DisplayName")
