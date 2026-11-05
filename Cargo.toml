@@ -1,0 +1,28 @@
+[package]
+name = "gameshelf"
+version = "0.1.0"
+edition = "2021"
+description = "Bibliotheque de jeux hors ligne pour Windows et Linux"
+license = "MIT"
+
+[dependencies]
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui_extras = { version = "0.31", features = ["image"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico", "bmp"] }
+rusqlite = { version = "0.33", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sysinfo = "0.33"
+walkdir = "2"
+dirs = "6"
+open = "5"
+rfd = "0.15"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
