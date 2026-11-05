@@ -225,11 +225,13 @@ impl Store {
             )
             .optional()?;
         let favorite = existing.as_ref().map_or(game.favorite, |row| row.0);
-        let cover = game
-            .cover_path
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string())
-            .or_else(|| existing.as_ref().and_then(|row| row.1.clone()));
+        // Discovery must never replace a cover already chosen in the library.
+        // Explicit replacements go through set_cover instead.
+        let cover = existing.as_ref().and_then(|row| row.1.clone()).or_else(|| {
+            game.cover_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+        });
         let category = existing
             .as_ref()
             .filter(|row| row.3 || (row.4 && !game.confirmed))
@@ -425,6 +427,37 @@ fn parse_launcher(value: &str) -> Launcher {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn rescans_preserve_user_cover_even_when_the_image_is_offline() {
+        let temp = tempdir().unwrap();
+        let db = temp.path().join("library.db");
+        let store = Store::open(&db).unwrap();
+        let mut game = Game::from_installation(
+            "Adventure",
+            "Steam",
+            Installation {
+                path: temp.path().join("game"),
+                launcher: Launcher::Steam,
+                launch_profile: None,
+                available: true,
+            },
+        );
+        game.cover_path = Some(temp.path().join("cache.png"));
+        store.save_game(&game).unwrap();
+        let chosen = temp.path().join("disconnected/Été.png");
+        store.set_cover(&game.id, Some(&chosen)).unwrap();
+        store.save_game(&game).unwrap();
+        drop(store);
+        let store = Store::open(&db).unwrap();
+        assert_eq!(store.games().unwrap()[0].cover_path.as_ref(), Some(&chosen));
+        let replacement = temp.path().join("replacement.png");
+        store.set_cover(&game.id, Some(&replacement)).unwrap();
+        assert_eq!(
+            store.games().unwrap()[0].cover_path.as_ref(),
+            Some(&replacement)
+        );
+    }
 
     #[test]
     fn separates_legacy_image_groups_without_losing_favorites_or_manual_categories() {
