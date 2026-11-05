@@ -165,23 +165,7 @@ fn should_descend(entry: &DirEntry, exclusions: &[PathBuf]) -> bool {
         return true;
     }
     #[cfg(target_os = "linux")]
-    if [
-        "/proc",
-        "/sys",
-        "/dev",
-        "/run",
-        "/tmp",
-        "/usr/bin",
-        "/usr/lib",
-        "/bin",
-        "/sbin",
-        "/etc",
-        "/var/lib",
-        "/var/cache",
-    ]
-    .iter()
-    .any(|system| path == Path::new(system) || path.starts_with(system))
-    {
+    if linux_system_path(path) {
         return false;
     }
     let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
@@ -199,6 +183,30 @@ fn should_descend(entry: &DirEntry, exclusions: &[PathBuf]) -> bool {
             | "target"
             | "temp"
     )
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_system_path(path: &Path) -> bool {
+    // Desktop environments commonly mount removable disks under /run/media.
+    // Keep /run traversable to reach those disks, excluding its other contents.
+    if path.starts_with("/run") && path != Path::new("/run") {
+        return !path.starts_with("/run/media");
+    }
+    [
+        "/proc",
+        "/sys",
+        "/dev",
+        "/tmp",
+        "/usr/bin",
+        "/usr/lib",
+        "/bin",
+        "/sbin",
+        "/etc",
+        "/var/lib",
+        "/var/cache",
+    ]
+    .iter()
+    .any(|system| path.starts_with(system))
 }
 
 fn is_candidate_executable(path: &Path) -> bool {
@@ -319,10 +327,17 @@ fn desktop_exec_arguments(exec: &str) -> Vec<String> {
 }
 
 fn desktop_value(contents: &str, key: &str) -> Option<String> {
-    contents
-        .lines()
-        .find_map(|line| line.strip_prefix(&format!("{key}=")).map(str::to_owned))
-        .filter(|value| !value.trim().is_empty())
+    let mut in_entry = false;
+    for line in contents.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_entry = line == "[Desktop Entry]";
+        } else if in_entry {
+            if let Some(value) = line.strip_prefix(&format!("{key}=")) {
+                return (!value.trim().is_empty()).then(|| value.to_owned());
+            }
+        }
+    }
+    None
 }
 
 fn candidate_from_disc_image(path: &Path) -> Option<Game> {
@@ -426,6 +441,44 @@ mod tests {
     use super::*;
     use std::{fs, sync::mpsc};
     use tempfile::tempdir;
+
+    #[test]
+    fn linux_removable_volumes_remain_scannable_without_entering_runtime_dirs() {
+        for path in [
+            "/run",
+            "/run/media",
+            "/run/media/alice/Jeux",
+            "/media/Jeux",
+            "/mnt/Jeux",
+        ] {
+            assert!(!linux_system_path(Path::new(path)), "{path}");
+        }
+        for path in [
+            "/run/user/1000",
+            "/run/udev",
+            "/run/media-backup",
+            "/proc/1",
+            "/sys",
+            "/dev",
+            "/var/cache",
+        ] {
+            assert!(linux_system_path(Path::new(path)), "{path}");
+        }
+    }
+
+    #[test]
+    fn desktop_actions_cannot_supply_a_missing_game_command_or_category() {
+        let temp = tempdir().unwrap();
+        let shortcut = temp.path().join("game.desktop");
+        fs::write(&shortcut, "[Desktop Entry]\nName=Game\nCategories=Game;\n[Desktop Action Remove]\nExec=uninstall-game\n").unwrap();
+        assert!(candidate_from_executable(&shortcut).is_none());
+        fs::write(
+            &shortcut,
+            "[Desktop Entry]\nName=Editor\nExec=editor\n[Desktop Action Play]\nCategories=Game;\n",
+        )
+        .unwrap();
+        assert!(candidate_from_executable(&shortcut).is_none());
+    }
 
     #[test]
     fn unavailable_roots_are_reported_as_skipped_not_failed() {
