@@ -4,24 +4,24 @@ Une tâche à la fois : comprendre, modifier, vérifier les critères, puis cré
 
 1. [x] Initialiser Cargo et Git.
 2. [x] Écrire les consignes et découper les tâches.
-3. [ ] Fenêtre et navigation de la bibliothèque.
-4. [ ] Modèles jeu, installation, catégorie et lancement.
-5. [ ] Base SQLite locale et migrations.
-6. [ ] Détection des volumes et exclusions configurables.
-7. [ ] Scan récursif annulable avec progression et erreurs.
-8. [ ] Bibliothèques et manifestes Steam.
-9. [ ] Manifestes Epic Windows.
-10. [ ] Installations locales Heroic.
-11. [ ] Configurations Lutris.
-12. [ ] Installations GOG Windows.
-13. [ ] Candidats indépendants et ajout manuel.
-14. [ ] Fusion persistante sans perte de corrections.
-15. [ ] État de scan raccordé à l'interface.
-16. [ ] Recherche, tri, catégories et favoris.
-17. [ ] Jaquettes locales et cache.
-18. [ ] Lancement direct multiplateforme.
-19. [ ] Délégation aux lanceurs Linux et profils configurés.
-20. [ ] Options et états indisponibles.
-21. [ ] Paquets Windows/Linux et guide CachyOS.
+3. [x] Fenêtre sombre et navigation de la bibliothèque.
+4. [x] Modèles jeu, installation, catégorie et lancement.
+5. [x] Base SQLite locale et tables versionnées par création.
+6. [x] Détection des volumes et exclusions configurables.
+7. [x] Scan récursif annulable avec progression et erreurs.
+8. [x] Bibliothèques et manifestes Steam.
+9. [x] Manifestes Epic Windows.
+10. [x] Métadonnées locales Heroic.
+11. [x] Configurations Lutris.
+12. [x] Dossiers de jeux GOG.
+13. [x] Candidats indépendants et ajout manuel.
+14. [x] Fusion persistante sans perte de favoris et catégories personnalisées.
+15. [x] État de scan raccordé à l'interface.
+16. [x] Recherche, tri alphabétique, catégories et favoris.
+17. [x] Jaquettes locales et remplacement manuel.
+18. [x] Lancement direct et liens Steam sous Windows/Linux.
+19. [x] Délégation aux lanceurs Linux Heroic et Lutris.
+20. [x] Options, exclusions et états de disponibilité.
+21. [x] Scripts de paquet Windows/Linux, fichier `.desktop`, guide CachyOS et CI multiplateforme. Validation graphique réelle CachyOS à faire sur une machine Linux.
 
 Critères : formatage, tests concernés, `cargo test`, Clippy sans avertissement. Chaque étape produit un commit séparé.
