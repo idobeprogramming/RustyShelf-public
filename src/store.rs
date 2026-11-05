@@ -200,13 +200,21 @@ impl Store {
     }
 
     pub fn reuse_installation_identity(&self, game: &mut Game) -> rusqlite::Result<()> {
-        for installation in &game.installations {
-            let id: Option<String> = self.connection.query_row(
-                "SELECT game_id FROM installations JOIN games ON games.id=installations.game_id WHERE path=?1 ORDER BY confirmed DESC, favorite DESC LIMIT 1",
-                [installation.path.to_string_lossy()], |row| row.get(0),
-            ).optional()?;
-            if let Some(id) = id {
+        #[cfg(windows)]
+        let query = "SELECT game_id,path FROM installations JOIN games ON games.id=installations.game_id WHERE REPLACE(path,char(92),'/')=?1 COLLATE NOCASE ORDER BY confirmed DESC, favorite DESC LIMIT 1";
+        #[cfg(not(windows))]
+        let query = "SELECT game_id,path FROM installations JOIN games ON games.id=installations.game_id WHERE path=?1 ORDER BY confirmed DESC, favorite DESC LIMIT 1";
+        for installation in &mut game.installations {
+            let path = installation.path.to_string_lossy().into_owned();
+            #[cfg(windows)]
+            let path = path.replace('\\', "/");
+            let existing: Option<(String, String)> = self
+                .connection
+                .query_row(query, [path], |row| Ok((row.get(0)?, row.get(1)?)))
+                .optional()?;
+            if let Some((id, path)) = existing {
                 game.id = id;
+                installation.path = path.into();
                 break;
             }
         }
@@ -424,6 +432,39 @@ fn parse_launcher(value: &str) -> Launcher {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn installation_identity_uses_platform_case_rules() {
+        let temp = tempdir().unwrap();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        let install = Installation {
+            path: temp.path().join("Games/Game"),
+            launcher: Launcher::Unknown,
+            launch_profile: None,
+            available: true,
+        };
+        let old = Game::from_installation("Old title", "À confirmer", install.clone());
+        store.save_game(&old).unwrap();
+        let mut new = Game::from_installation(
+            "New title",
+            "Steam",
+            Installation {
+                path: temp.path().join("games/game"),
+                launcher: Launcher::Steam,
+                ..install
+            },
+        );
+        store.reuse_installation_identity(&mut new).unwrap();
+        #[cfg(windows)]
+        {
+            assert_eq!(new.id, old.id);
+            assert_eq!(new.installations[0].path, old.installations[0].path);
+            store.save_game(&new).unwrap();
+            assert_eq!(store.games().unwrap()[0].installations.len(), 1);
+        }
+        #[cfg(not(windows))]
+        assert_ne!(new.id, old.id);
+    }
 
     #[test]
     fn recognized_title_reuses_unknown_installation_and_preserves_edits() {
