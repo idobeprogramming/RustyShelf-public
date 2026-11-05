@@ -201,6 +201,16 @@ fn candidate_from_executable(path: &Path) -> Option<Game> {
     if !looks_like_game(&title) {
         return None;
     }
+    if let Some(text) = desktop_text.as_deref() {
+        if desktop_value(text, "Hidden").as_deref() == Some("true")
+            || !desktop_value(text, "Categories")
+                .is_some_and(|categories| categories.split(';').any(|category| category == "Game"))
+        {
+            return None;
+        }
+    } else if !has_game_assets(path) {
+        return None;
+    }
     let folder = path.parent()?.to_path_buf();
     let (command, arguments, working_directory) = if let Some(text) = desktop_text.as_deref() {
         let exec = desktop_value(text, "Exec")?;
@@ -273,7 +283,30 @@ fn desktop_value(contents: &str, key: &str) -> Option<String> {
 
 fn candidate_from_disc_image(path: &Path) -> Option<Game> {
     let title = path.file_stem()?.to_string_lossy().trim().to_string();
-    if !looks_like_game(&title) {
+    if title.is_empty() {
+        return None;
+    }
+    // ISO is also used by operating systems and backup tools. Require a game folder.
+    if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("iso"))
+        && !path.ancestors().skip(1).any(|folder| {
+            folder.file_name().is_some_and(|name| {
+                matches!(
+                    name.to_string_lossy().to_lowercase().as_str(),
+                    "games"
+                        | "jeux"
+                        | "roms"
+                        | "isos"
+                        | "emulation"
+                        | "ps2"
+                        | "psp"
+                        | "wii"
+                        | "gamecube"
+                )
+            })
+        })
+    {
         return None;
     }
     Some(Game::from_installation(
@@ -286,6 +319,22 @@ fn candidate_from_disc_image(path: &Path) -> Option<Game> {
             available: true,
         },
     ))
+}
+
+fn has_game_assets(executable: &Path) -> bool {
+    let Some(folder) = executable.parent() else {
+        return false;
+    };
+    let stem = executable.file_stem().unwrap_or_default().to_string_lossy();
+    folder.join(format!("{stem}_Data")).is_dir()
+        || executable.with_extension("pck").is_file()
+        || folder.join("data.win").is_file()
+        || folder.join("renpy").is_dir()
+        || folder.join("www/data/System.json").is_file()
+        || folder
+            .ancestors()
+            .take(4)
+            .any(|parent| parent.join("Content/Paks").is_dir())
 }
 
 fn looks_like_game(name: &str) -> bool {
@@ -324,6 +373,24 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn ordinary_apps_and_non_game_desktop_entries_are_rejected() {
+        let temp = tempdir().unwrap();
+        let executable = temp.path().join("TextEditor.exe");
+        fs::write(&executable, []).unwrap();
+        assert!(candidate_from_executable(&executable).is_none());
+        fs::create_dir(temp.path().join("TextEditor_Data")).unwrap();
+        assert!(candidate_from_executable(&executable).is_some());
+        let shortcut = temp.path().join("editor.desktop");
+        fs::write(
+            &shortcut,
+            "[Desktop Entry]\nName=Editor\nCategories=Utility;\nExec=editor",
+        )
+        .unwrap();
+        assert!(candidate_from_executable(&shortcut).is_none());
+        assert!(candidate_from_disc_image(&temp.path().join("Windows.iso")).is_none());
+    }
+
+    #[test]
     fn scan_reports_candidates_and_respects_exclusions() {
         let temp = tempdir().unwrap();
         let game = temp.path().join("Games").join("SuperGame");
@@ -331,6 +398,17 @@ mod tests {
         fs::create_dir_all(&game).unwrap();
         fs::create_dir_all(&ignored).unwrap();
         fs::write(game.join("SuperGame.exe"), []).unwrap();
+        fs::create_dir(game.join("SuperGame_Data")).unwrap();
+        // Linux scans native executables and scripts, not Windows .exe files.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                game.join("SuperGame.exe"),
+                fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
         fs::write(ignored.join("HiddenGame.exe"), []).unwrap();
         let (tx, rx) = mpsc::channel();
         scan_roots(
@@ -393,7 +471,7 @@ mod tests {
     fn desktop_shortcuts_use_their_display_name_and_launch_command() {
         let temp = tempdir().unwrap();
         let shortcut = temp.path().join("moonlight.desktop");
-        fs::write(&shortcut, "[Desktop Entry]\nName=Moonlight Arcade\nExec=\"/games/Moonlight Arcade/run game\" --fullscreen %U\nPath=/games/Moonlight Arcade").unwrap();
+        fs::write(&shortcut, "[Desktop Entry]\nName=Moonlight Arcade\nCategories=Game;\nExec=\"/games/Moonlight Arcade/run game\" --fullscreen %U\nPath=/games/Moonlight Arcade").unwrap();
         let game = candidate_from_executable(&shortcut).unwrap();
         assert_eq!(game.title, "Moonlight Arcade");
         let profile = game.installations[0].launch_profile.as_ref().unwrap();

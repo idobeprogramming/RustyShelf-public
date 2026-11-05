@@ -333,7 +333,7 @@ impl GameShelfApp {
                 ));
                 let _ = sender.send(ScanEvent::Finished {
                     visited: 0,
-                    cancelled: worker_control.is_cancelled(),
+                    cancelled: true,
                 });
             }
         });
@@ -364,6 +364,9 @@ impl GameShelfApp {
                             .map(|installation| installation.path.clone()),
                     );
                     if let Some(store) = &self.store {
+                        if store.is_ignored(&game.id).unwrap_or(false) {
+                            continue;
+                        }
                         if let Err(error) = store.save_game(&game) {
                             self.errors.push(error.to_string());
                         }
@@ -375,6 +378,10 @@ impl GameShelfApp {
                     self.scan_current = progress.current.to_string_lossy().to_string();
                 }
                 ScanEvent::Error(path, message) => {
+                    // An unreadable subtree is not proof that a game was removed.
+                    if !path.as_os_str().is_empty() {
+                        self.scan_exclusions.push(path.clone());
+                    }
                     if self.errors.len() < 30 {
                         self.errors.push(format!("{} : {message}", path.display()));
                     }
@@ -622,6 +629,11 @@ impl GameShelfApp {
                     ui.add_space(10.0);
                     if ui.button(tr(self.language, "⌕   Scanner mes disques", "⌕   Scan my drives")).clicked() { self.show_options = true; }
                     if ui.button(tr(self.language, "＋   Ajouter un jeu", "＋   Add a game")).clicked() { self.add_manual_game(); }
+                    let pending = self.games.iter().filter(|game| !game.confirmed).count();
+                    if pending > 0 && ui.button(format!("{} ({pending})", tr(self.language, "Examiner les candidats", "Review candidates"))).clicked() {
+                        self.selected_category = "À confirmer".into();
+                        self.selected_game = self.games.iter().find(|game| !game.confirmed).map(|game| game.id.clone());
+                    }
                 });
                 return;
             }
@@ -664,12 +676,15 @@ impl GameShelfApp {
 
     fn matches_category(&self, game: &Game) -> bool {
         match self.selected_category.as_str() {
-            "Tous les jeux" => true,
+            "Tous les jeux" => game.confirmed,
             "Favoris" => game.favorite,
-            "Installés" => game
-                .installations
-                .iter()
-                .any(|installation| installation.available),
+            "Installés" => {
+                game.confirmed
+                    && game
+                        .installations
+                        .iter()
+                        .any(|installation| installation.available)
+            }
             "À confirmer" => !game.confirmed,
             category => game.category.eq_ignore_ascii_case(category),
         }
@@ -700,6 +715,26 @@ impl GameShelfApp {
         };
         ui.label(RichText::new(category).color(Color32::GRAY));
         ui.add_space(10.0);
+        if !game.confirmed
+            && ui
+                .button(tr(
+                    self.language,
+                    "Ce n’est pas un jeu · Ignorer",
+                    "Not a game · Ignore",
+                ))
+                .clicked()
+        {
+            if let Some(store) = &self.store {
+                match store.ignore_game(&game.id) {
+                    Ok(()) => {
+                        self.games.retain(|item| item.id != game.id);
+                        self.selected_game = None;
+                    }
+                    Err(error) => self.status = error.to_string(),
+                }
+            }
+            return;
+        }
         if !game.confirmed
             && ui
                 .button(tr(
@@ -984,6 +1019,14 @@ impl GameShelfApp {
                 }
                 ui.separator();
                 ui.heading(tr(self.language, "Scanner", "Scanner"));
+                if ui.button(tr(self.language, "Réafficher les candidats ignorés", "Restore ignored candidates")).clicked() {
+                    if let Some(store) = &self.store {
+                        match store.restore_ignored_games().and_then(|_| store.games()) {
+                            Ok(games) => self.games = deduplicate_library(games),
+                            Err(error) => self.status = error.to_string(),
+                        }
+                    }
+                }
                 ui.label(tr(self.language, "Choisis les disques montés à analyser. Les jeux et images disque trouvés restent locaux.", "Choose mounted drives to scan. Games and disc images stay on this device."));
                 egui::ScrollArea::vertical()
                     .max_height(220.0)

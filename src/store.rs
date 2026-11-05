@@ -31,6 +31,7 @@ impl Store {
                available INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(game_id, path)
              );
              CREATE TABLE IF NOT EXISTS excluded_paths (path TEXT PRIMARY KEY);
+             CREATE TABLE IF NOT EXISTS ignored_games (game_id TEXT PRIMARY KEY);
              CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS emulators (id TEXT PRIMARY KEY, name TEXT NOT NULL, executable TEXT NOT NULL UNIQUE);
              CREATE TABLE IF NOT EXISTS game_emulators (game_id TEXT PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE, emulator_id TEXT NOT NULL REFERENCES emulators(id) ON DELETE CASCADE);
@@ -189,7 +190,7 @@ impl Store {
     }
 
     pub fn games(&self) -> rusqlite::Result<Vec<Game>> {
-        let mut statement = self.connection.prepare("SELECT id,title,category,favorite,confirmed,cover_path FROM games ORDER BY title COLLATE NOCASE")?;
+        let mut statement = self.connection.prepare("SELECT id,title,category,favorite,confirmed,cover_path FROM games WHERE NOT EXISTS (SELECT 1 FROM ignored_games WHERE game_id=games.id) ORDER BY title COLLATE NOCASE")?;
         let rows = statement.query_map([], |row| {
             let cover: Option<String> = row.get(5)?;
             Ok(Game {
@@ -232,6 +233,27 @@ impl Store {
             "UPDATE games SET confirmed=?2 WHERE id=?1",
             params![id, confirmed],
         )?;
+        Ok(())
+    }
+
+    pub fn ignore_game(&self, id: &str) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "INSERT OR IGNORE INTO ignored_games(game_id) VALUES(?1)",
+            [id],
+        )?;
+        Ok(())
+    }
+
+    pub fn is_ignored(&self, id: &str) -> rusqlite::Result<bool> {
+        self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM ignored_games WHERE game_id=?1)",
+            [id],
+            |row| row.get(0),
+        )
+    }
+
+    pub fn restore_ignored_games(&self) -> rusqlite::Result<()> {
+        self.connection.execute("DELETE FROM ignored_games", [])?;
         Ok(())
     }
 
@@ -294,7 +316,7 @@ impl Store {
             if roots.iter().any(|root| path.starts_with(root))
                 && !exclusions.iter().any(|excluded| path.starts_with(excluded))
             {
-                let available = seen_paths.contains(&path);
+                let available = seen_paths.contains(&path) || path.exists();
                 tx.execute(
                     "UPDATE installations SET available=?2 WHERE path=?1",
                     params![path.to_string_lossy(), available],
@@ -332,6 +354,29 @@ fn parse_launcher(value: &str) -> Launcher {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn ignored_candidates_stay_hidden_after_rescan_and_can_be_restored() {
+        let temp = tempdir().unwrap();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        let candidate = Game::from_installation(
+            "Utility",
+            "À confirmer",
+            Installation {
+                path: temp.path().join("utility"),
+                launcher: Launcher::Unknown,
+                launch_profile: None,
+                available: true,
+            },
+        );
+        store.save_game(&candidate).unwrap();
+        store.ignore_game(&candidate.id).unwrap();
+        store.save_game(&candidate).unwrap();
+        assert!(store.is_ignored(&candidate.id).unwrap());
+        assert!(store.games().unwrap().is_empty());
+        store.restore_ignored_games().unwrap();
+        assert_eq!(store.games().unwrap().len(), 1);
+    }
     #[test]
     fn round_trip_keeps_favorite_and_multiple_installs() {
         let temp = tempdir().unwrap();
