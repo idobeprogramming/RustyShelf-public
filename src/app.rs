@@ -148,6 +148,7 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
             visuals.window_corner_radius = egui::CornerRadius::same(18);
         }
     }
+    visuals.widgets.active.fg_stroke.color = crate::style::text_on(visuals.widgets.active.bg_fill);
     visuals.selection.bg_fill = theme_accent(theme);
     visuals.selection.stroke.color = crate::style::text_on(theme_accent(theme));
     ctx.set_visuals(visuals);
@@ -1232,6 +1233,21 @@ impl RustyShelfApp {
         });
     }
     fn matches_category(&self, game: &Game) -> bool {
+        let source = match self.selected_category.as_str() {
+            "Steam" => Some(Launcher::Steam),
+            "Epic Games" => Some(Launcher::Epic),
+            "Heroic" => Some(Launcher::Heroic),
+            "Lutris" => Some(Launcher::Lutris),
+            "GOG" => Some(Launcher::Gog),
+            "Ajout manuel" => Some(Launcher::Manual),
+            _ => None,
+        };
+        if let Some(source) = source {
+            return game
+                .installations
+                .iter()
+                .any(|installation| installation.launcher == source);
+        }
         if let Some(console) = self.selected_category.strip_prefix("console:") {
             return self.game_console(game) == Some(console);
         }
@@ -1850,8 +1866,8 @@ fn card_color(theme: Theme) -> Color32 {
 fn theme_accent(theme: Theme) -> Color32 {
     match theme {
         Theme::Dark => Color32::from_rgb(229, 162, 112),
-        Theme::Light => Color32::from_rgb(226, 221, 249),
-        Theme::Breeze => Color32::from_rgb(190, 220, 244),
+        Theme::Light => Color32::from_rgb(163, 95, 64),
+        Theme::Breeze => Color32::from_rgb(63, 134, 171),
         Theme::Horizon => Color32::from_rgb(49, 106, 197),
         Theme::Classic => Color32::from_rgb(0, 0, 128),
         Theme::Prism => Color32::from_rgba_unmultiplied(112, 145, 199, 150),
@@ -2073,6 +2089,11 @@ mod tests {
             console_emulators: HashMap::new(),
         };
         app.refresh_appearance(&ctx);
+        app.games[0].category = "Plateforme".into();
+        app.games[0].installations[0].launcher = Launcher::Steam;
+        app.selected_category = "Steam".into();
+        assert!(app.matches_category(&app.games[0]));
+        app.selected_category = "ROMs".into();
         for width in [780.0, 1280.0] {
             let output = ctx.run(
                 egui::RawInput {
