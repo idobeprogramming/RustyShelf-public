@@ -28,5 +28,12 @@ Une tâche à la fois : comprendre, modifier, vérifier les critères, puis cré
 24. [x] Détecter les images disque et choisir un émulateur par défaut ou par jeu.
 25. [x] Construire les paquets Windows/Linux et les joindre aux exécutions du pipeline CI.
 26. [ ] Vérifier graphiquement sur une vraie session CachyOS Wayland et X11.
+27. [x] Renommer l’application RustyShelf et conserver l’accès à la bibliothèque précédente.
+28. [x] Donner aux thèmes des noms originaux et prendre en charge les anciens réglages.
+29. [x] Refaire la galerie, la fiche latérale et le défilement par lignes visibles.
+30. [x] Importer un style CSS local limité, avec modèle, erreurs et rechargement.
+31. [x] Ajouter les vues ROMs/consoles, les filtres communs et le tri.
+32. [x] Corriger la console d’un jeu et choisir un émulateur par console.
+33. [x] Sauvegarder la base SQLite et exporter le catalogue JSON.
 
 Critères : formatage, tests concernés, `cargo test`, Clippy sans avertissement. Chaque lot autonome produit un commit séparé. Le pipeline CI exécute ces contrôles et construit les deux paquets à chaque push ou pull request.
