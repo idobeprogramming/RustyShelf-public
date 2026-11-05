@@ -340,6 +340,55 @@ impl RustyShelfApp {
         self.custom_style.as_ref().filter(|_| self.css_enabled)
     }
 
+    fn persist(&mut self, action: impl FnOnce(&Store) -> rusqlite::Result<()>) -> bool {
+        let result = self
+            .store
+            .as_ref()
+            .ok_or_else(|| {
+                tr(
+                    self.language,
+                    "Base locale indisponible : modification non enregistrée.",
+                    "Local database unavailable: change was not saved.",
+                )
+                .to_owned()
+            })
+            .and_then(|store| action(store).map_err(|error| error.to_string()));
+        match result {
+            Ok(()) => true,
+            Err(error) => {
+                self.status = format!(
+                    "{} : {error}",
+                    tr(self.language, "Échec de l’enregistrement", "Save failed")
+                );
+                false
+            }
+        }
+    }
+
+    fn update_library(&mut self, action: impl FnOnce(&Store) -> rusqlite::Result<()>) -> bool {
+        if !self.persist(action) {
+            return false;
+        }
+        // A failed reload must not turn an existing library into an empty one.
+        if let Some(store) = &self.store {
+            match store.games() {
+                Ok(games) => self.games = deduplicate_library(games),
+                Err(error) => {
+                    self.status = format!(
+                        "{} : {error}",
+                        tr(
+                            self.language,
+                            "Modification enregistrée, rechargement impossible",
+                            "Change saved, reload failed"
+                        )
+                    );
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     fn game_console<'a>(&'a self, game: &Game) -> Option<&'a str> {
         self.console_overrides
             .get(&game.id)
@@ -392,23 +441,23 @@ impl RustyShelfApp {
             }
         });
         if previous != chosen {
+            let mut mapping = self.console_emulators.clone();
             if let Some(id) = chosen {
-                self.console_emulators.insert(console.into(), id);
+                mapping.insert(console.into(), id);
             } else {
-                self.console_emulators.remove(console);
+                mapping.remove(console);
             }
-            self.save_mapping("console_emulators", self.console_emulators.clone());
+            if self.save_mapping("console_emulators", &mapping) {
+                self.console_emulators = mapping;
+            }
         }
     }
-    fn save_mapping(&mut self, key: &str, mapping: HashMap<String, String>) {
-        if let Some(store) = &self.store {
-            match serde_json::to_string(&mapping) {
-                Ok(json) => {
-                    if let Err(error) = store.set_preference(key, &json) {
-                        self.status = error.to_string();
-                    }
-                }
-                Err(error) => self.status = error.to_string(),
+    fn save_mapping(&mut self, key: &str, mapping: &HashMap<String, String>) -> bool {
+        match serde_json::to_string(mapping) {
+            Ok(json) => self.persist(|store| store.set_preference(key, &json)),
+            Err(error) => {
+                self.status = error.to_string();
+                false
             }
         }
     }
@@ -671,21 +720,17 @@ impl RustyShelfApp {
                 available: true,
             },
         );
-        if let Some(store) = &self.store {
-            if let Err(error) = store.reuse_rom_identity(&mut game) {
-                self.status = error.to_string();
-                return;
-            }
-            if store.save_game(&game).is_ok() {
-                self.games = store.games().map(deduplicate_library).unwrap_or_default();
-                self.selected_game = Some(game.id);
-                self.status = tr(
-                    self.language,
-                    "Jeu ajouté à la bibliothèque.",
-                    "Game added to your library.",
-                )
-                .into();
-            }
+        if self.update_library(|store| {
+            store.reuse_rom_identity(&mut game)?;
+            store.save_game(&game)
+        }) {
+            self.selected_game = Some(game.id);
+            self.status = tr(
+                self.language,
+                "Jeu ajouté à la bibliothèque.",
+                "Game added to your library.",
+            )
+            .into();
         }
     }
 
@@ -1402,12 +1447,7 @@ impl RustyShelfApp {
                 ))
                 .clicked()
         {
-            if let Some(store) = &self.store {
-                let _ = store.set_confirmed(&game.id, true);
-            }
-            if let Some(item) = self.games.iter_mut().find(|item| item.id == game.id) {
-                item.confirmed = true;
-            }
+            self.update_library(|store| store.set_confirmed(&game.id, true));
         }
         if ui
             .button(if game.favorite {
@@ -1425,12 +1465,7 @@ impl RustyShelfApp {
             })
             .clicked()
         {
-            if let Some(store) = &self.store {
-                let _ = store.set_favorite(&game.id, !game.favorite);
-            }
-            if let Some(item) = self.games.iter_mut().find(|item| item.id == game.id) {
-                item.favorite = !game.favorite;
-            }
+            self.update_library(|store| store.set_favorite(&game.id, !game.favorite));
         }
         ui.horizontal(|ui| {
             ui.label(tr(self.language, "Catégorie", "Category"));
@@ -1446,10 +1481,8 @@ impl RustyShelfApp {
                 .clicked()
                 && !self.category_edit.trim().is_empty()
             {
-                if let Some(store) = &self.store {
-                    let _ = store.set_category(&game.id, self.category_edit.trim());
-                    self.games = store.games().map(deduplicate_library).unwrap_or_default();
-                }
+                let category = self.category_edit.trim().to_owned();
+                self.update_library(|store| store.set_category(&game.id, &category));
             }
         });
         if ui
@@ -1464,11 +1497,9 @@ impl RustyShelfApp {
                 .add_filter("Image", &["png", "jpg", "jpeg", "bmp", "ico"])
                 .pick_file()
             {
-                if let Some(store) = &self.store {
-                    let _ = store.set_cover(&game.id, Some(&path));
-                    self.games = store.games().map(deduplicate_library).unwrap_or_default();
+                if self.update_library(|store| store.set_cover(&game.id, Some(&path))) {
+                    self.cover_textures.remove(&game.id);
                 }
-                self.cover_textures.remove(&game.id);
             }
         }
         ui.add_space(10.0);
@@ -1501,12 +1532,15 @@ impl RustyShelfApp {
                     }
                 });
             if chosen_console != current_console {
+                let mut mapping = self.console_overrides.clone();
                 if let Some(console) = chosen_console {
-                    self.console_overrides.insert(game.id.clone(), console);
+                    mapping.insert(game.id.clone(), console);
                 } else {
-                    self.console_overrides.remove(&game.id);
+                    mapping.remove(&game.id);
                 }
-                self.save_mapping("console_overrides", self.console_overrides.clone());
+                if self.save_mapping("console_overrides", &mapping) {
+                    self.console_overrides = mapping;
+                }
             }
             let console = self
                 .game_console(&game)
@@ -1660,7 +1694,10 @@ impl RustyShelfApp {
                         ui.selectable_value(&mut self.language, Language::English, "English");
                     });
                 if previous_language != self.language {
-                    if let Some(store) = &self.store { let _ = store.set_preference("language", self.language.key()); }
+                    let key = self.language.key();
+                    if !self.persist(|store| store.set_preference("language", key)) {
+                        self.language = previous_language;
+                    }
                 }
                 let previous_theme = self.theme;
                 egui::ComboBox::from_label(tr(self.language, "Thème", "Theme"))
@@ -1678,8 +1715,11 @@ impl RustyShelfApp {
                         }
                     });
                 if previous_theme != self.theme {
+                    let key = self.theme.key();
+                    if !self.persist(|store| store.set_preference("theme", key)) {
+                        self.theme = previous_theme;
+                    }
                     self.refresh_appearance(ctx);
-                    if let Some(store) = &self.store { let _ = store.set_preference("theme", self.theme.key()); }
                 }
                 ui.separator();
                 ui.heading(tr(self.language, "Style CSS personnalisé", "Custom CSS style"));
@@ -1704,7 +1744,8 @@ impl RustyShelfApp {
                 if ui.checkbox(&mut self.css_enabled, tr(self.language, "Activer le style CSS", "Enable CSS style")).changed() {
                     if self.css_enabled && self.custom_style.is_none() { self.load_css(ctx); }
                     self.refresh_appearance(ctx);
-                    if let Some(store) = &self.store { let _ = store.set_preference("css_enabled", if self.css_enabled { "true" } else { "false" }); }
+                    let key = if self.css_enabled { "true" } else { "false" };
+                    self.persist(|store| store.set_preference("css_enabled", key));
                 }
                 if let Some(path) = &self.css_path { ui.label(path.display().to_string()); }
                 if let Some(error) = &self.css_error { ui.colored_label(Color32::from_rgb(225, 92, 85), error); }
@@ -1759,10 +1800,7 @@ impl RustyShelfApp {
                 ui.horizontal(|ui| {
                     if ui.button(tr(self.language, "＋ Exclure un dossier…", "＋ Exclude folder…")).clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                            if let Some(store) = &self.store {
-                                let _ = store.add_exclusion(&path);
-                            }
-                            if !self.exclusions.contains(&path) {
+                            if self.persist(|store| store.add_exclusion(&path)) && !self.exclusions.contains(&path) {
                                 self.exclusions.push(path);
                             }
                         }
@@ -1800,9 +1838,9 @@ impl RustyShelfApp {
                         });
                     }
                     if let Some(index) = remove {
-                        let path = self.exclusions.remove(index);
-                        if let Some(store) = &self.store {
-                            let _ = store.remove_exclusion(&path);
+                        let path = self.exclusions[index].clone();
+                        if self.persist(|store| store.remove_exclusion(&path)) {
+                            self.exclusions.remove(index);
                         }
                     }
                 }
@@ -2110,10 +2148,7 @@ mod tests {
         assert_eq!(deduplicate_library(library).len(), 2);
     }
 
-    #[test]
-    fn library_and_options_render_at_compact_and_wide_sizes() {
-        let ctx = egui::Context::default();
-        ctx.options_mut(|options| options.warn_on_id_clash = true);
+    fn test_app() -> RustyShelfApp {
         let games = (0..40)
             .map(|index| {
                 Game::from_installation(
@@ -2128,7 +2163,7 @@ mod tests {
                 )
             })
             .collect();
-        let mut app = RustyShelfApp {
+        RustyShelfApp {
             selected_category: "ROMs".into(),
             search: String::new(),
             show_options: false,
@@ -2160,7 +2195,42 @@ mod tests {
             filters: Filters::default(),
             console_overrides: HashMap::new(),
             console_emulators: HashMap::new(),
-        };
+        }
+    }
+
+    #[test]
+    fn failed_saves_keep_the_library_and_report_the_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("library.db");
+        let mut app = test_app();
+        let game = app.games[0].clone();
+        assert!(!app.update_library(|store| store.set_favorite(&game.id, true)));
+        assert!(!app.games[0].favorite);
+        assert!(app.status.contains("Base locale indisponible"));
+        let store = Store::open(&path).unwrap();
+        store.save_game(&game).unwrap();
+        app.store = Some(store);
+        assert!(app.update_library(|store| store.set_favorite(&game.id, true)));
+        assert!(app.games[0].favorite);
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TRIGGER reject_change BEFORE UPDATE ON games BEGIN SELECT RAISE(ABORT, 'écriture refusée'); END;").unwrap();
+        assert!(!app.update_library(|store| store.set_favorite(&game.id, false)));
+        assert!(app.games[0].favorite);
+        assert!(app.status.contains("écriture refusée"));
+        // A successful write followed by an unreadable catalogue also retains the last view.
+        connection
+            .execute_batch("ALTER TABLE installations RENAME TO damaged_installations;")
+            .unwrap();
+        assert!(!app.update_library(|store| store.set_preference("test", "saved")));
+        assert_eq!(app.games.len(), 1);
+        assert!(app.status.contains("rechargement impossible"));
+    }
+
+    #[test]
+    fn library_and_options_render_at_compact_and_wide_sizes() {
+        let ctx = egui::Context::default();
+        ctx.options_mut(|options| options.warn_on_id_clash = true);
+        let mut app = test_app();
         app.refresh_appearance(&ctx);
         app.volumes = vec![Volume {
             root: "C:/".into(),
