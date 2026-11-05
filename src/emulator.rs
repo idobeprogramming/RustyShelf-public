@@ -1,6 +1,16 @@
 use crate::model::Emulator;
 use std::path::{Path, PathBuf};
 
+pub fn for_category<'a>(
+    console: Option<&str>,
+    associations: &std::collections::HashMap<String, String>,
+    emulators: &'a [Emulator],
+) -> Option<&'a Emulator> {
+    let console = console.filter(|console| crate::rom::assignable_console(console))?;
+    let id = associations.get(console)?;
+    emulators.iter().find(|emulator| &emulator.id == id)
+}
+
 pub fn is_disc_image(path: &Path) -> bool {
     matches!(
         path.extension()
@@ -74,6 +84,27 @@ fn find_on_path(binary: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn never_inherits_an_emulator_from_another_category() {
+        let emulators = [
+            Emulator::new("PS2 runner", "/tools/ps2".into()),
+            Emulator::new("GC runner", "/tools/gc".into()),
+        ];
+        let mut associations = std::collections::HashMap::new();
+        associations.insert("PlayStation 2".into(), emulators[0].id.clone());
+        associations.insert("GameCube".into(), emulators[1].id.clone());
+        assert_eq!(
+            for_category(Some("PlayStation 2"), &associations, &emulators),
+            Some(&emulators[0])
+        );
+        assert_eq!(
+            for_category(Some("GameCube"), &associations, &emulators),
+            Some(&emulators[1])
+        );
+        assert!(for_category(Some("PSP"), &associations, &emulators).is_none());
+        assert!(for_category(Some(crate::rom::UNCLASSIFIED), &associations, &emulators).is_none());
+        assert!(for_category(None, &associations, &emulators).is_none());
+    }
     #[test]
     fn recognizes_common_disc_image_formats_case_insensitively() {
         for path in ["game.ISO", "disc.chd", "game.wbfs", "disc.CSO", "game.gcz"] {

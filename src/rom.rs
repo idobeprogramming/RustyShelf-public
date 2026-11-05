@@ -1,6 +1,8 @@
 use crate::{emulator, model::Game};
 use std::path::Path;
 
+pub const UNCLASSIFIED: &str = "Images à classer";
+
 pub const CONSOLES: &[&str] = &[
     "NES",
     "Super Nintendo",
@@ -22,10 +24,9 @@ pub const CONSOLES: &[&str] = &[
     "PSP",
     "GameCube",
     "Wii",
-    "GameCube / Wii",
     "Xbox",
     "Xbox 360",
-    "Console à préciser",
+    UNCLASSIFIED,
 ];
 
 pub fn game_console(game: &Game) -> Option<&'static str> {
@@ -67,11 +68,7 @@ pub fn console(path: &Path) -> Option<&'static str> {
         "md" if has_sega_header(path) => "Mega Drive",
         "sms" => "Master System",
         "gg" => "Game Gear",
-        "gcm" => "GameCube",
-        "wbfs" => "Wii",
-        "cso" | "pbp" => "PSP",
-        "gcz" | "rvz" => folder_console(path).unwrap_or("GameCube / Wii"),
-        _ if emulator::is_disc_image(path) => folder_console(path).unwrap_or("Console à préciser"),
+        _ if is_image(path) => UNCLASSIFIED,
         _ => return None,
     };
     Some(console)
@@ -88,27 +85,21 @@ fn has_sega_header(path: &Path) -> bool {
         && &signature == b"SEGA"
 }
 
-fn folder_console(path: &Path) -> Option<&'static str> {
-    path.ancestors().skip(1).find_map(|folder| {
-        let name = folder.file_name()?.to_string_lossy().to_ascii_lowercase();
-        match name.as_str() {
-            "ps1" | "psx" | "playstation" => Some("PlayStation"),
-            "ps2" | "playstation 2" => Some("PlayStation 2"),
-            "ps3" | "playstation 3" => Some("PlayStation 3"),
-            "psp" => Some("PSP"),
-            "gamecube" | "ngc" => Some("GameCube"),
-            "wii" => Some("Wii"),
-            "dreamcast" => Some("Dreamcast"),
-            "saturn" => Some("Saturn"),
-            "segacd" | "sega cd" | "mega cd" => Some("Mega-CD"),
-            "megadrive" | "mega drive" | "genesis" => Some("Mega Drive"),
-            "xbox" => Some("Xbox"),
-            "xbox360" | "xbox 360" => Some("Xbox 360"),
-            _ => None,
-        }
-    })
+pub fn is_image(path: &Path) -> bool {
+    emulator::is_disc_image(path)
+        || path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                ["rvz", "gcm"]
+                    .iter()
+                    .any(|known| extension.eq_ignore_ascii_case(known))
+            })
 }
 
+pub fn assignable_console(console: &str) -> bool {
+    console != UNCLASSIFIED && CONSOLES.contains(&console)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,15 +109,12 @@ mod tests {
         assert_eq!(console(Path::new("/roms/zelda.NES")), Some("NES"));
         assert_eq!(
             console(Path::new("/roms/PS2/racing.iso")),
-            Some("PlayStation 2")
+            Some(UNCLASSIFIED)
         );
-        assert_eq!(
-            console(Path::new("/roms/racing.chd")),
-            Some("Console à préciser")
-        );
+        assert_eq!(console(Path::new("/roms/racing.chd")), Some(UNCLASSIFIED));
         assert_eq!(
             console(Path::new("/roms/GameCube/racing.rvz")),
-            Some("GameCube")
+            Some(UNCLASSIFIED)
         );
         assert_eq!(console(Path::new("/apps/readme.md")), None);
         assert_eq!(console(Path::new("/models/car.3ds")), None);

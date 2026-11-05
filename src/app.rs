@@ -1,4 +1,5 @@
 use crate::{
+    diagnostics::ScanDiagnostics,
     library::{Filters, GameKind, Sort},
     model::{Emulator, Game, Installation, LaunchProfile, Launcher},
     scan::{self, ScanControl, ScanEvent, Volume},
@@ -204,14 +205,13 @@ pub struct RustyShelfApp {
     scan_roots: Vec<PathBuf>,
     scan_exclusions: Vec<PathBuf>,
     scan_seen_paths: Vec<PathBuf>,
-    errors: Vec<String>,
+    diagnostics: ScanDiagnostics,
     cover_textures: HashMap<String, TextureHandle>,
     category_edit: String,
     category_edit_id: Option<String>,
     language: Language,
     theme: Theme,
     emulators: Vec<Emulator>,
-    preferred_emulator: Option<String>,
     css_path: Option<PathBuf>,
     css_enabled: bool,
     custom_style: Option<CustomStyle>,
@@ -278,17 +278,6 @@ impl RustyShelfApp {
             .as_ref()
             .and_then(|s| s.emulators().ok())
             .unwrap_or_default();
-        let mut preferred_emulator = store
-            .as_ref()
-            .and_then(|s| s.preference("preferred_emulator").ok())
-            .flatten()
-            .filter(|id| !id.is_empty());
-        if preferred_emulator.is_none() && emulators.len() == 1 {
-            preferred_emulator = emulators.first().map(|emulator| emulator.id.clone());
-            if let (Some(store), Some(id)) = (&store, &preferred_emulator) {
-                let _ = store.set_preference("preferred_emulator", id);
-            }
-        }
         let exclusions = store
             .as_ref()
             .and_then(|s| s.exclusions().ok())
@@ -297,8 +286,16 @@ impl RustyShelfApp {
             status = format!("Base locale indisponible : {error}");
         }
         let volumes = scan::mounted_volumes();
-        let console_overrides = load_mapping(store.as_ref(), "console_overrides");
-        let console_emulators = load_mapping(store.as_ref(), "console_emulators");
+        let mut console_overrides = load_mapping(store.as_ref(), "console_overrides");
+        console_overrides.retain(|_, console| crate::rom::assignable_console(console));
+        let mut console_emulators = load_mapping(store.as_ref(), "console_emulators");
+        console_emulators.retain(|console, _| crate::rom::assignable_console(console));
+        let diagnostics = store
+            .as_ref()
+            .and_then(|store| store.preference("last_scan_diagnostics").ok())
+            .flatten()
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default();
         let selected_volumes = vec![true; volumes.len()];
         Self {
             selected_category: "Tous les jeux".into(),
@@ -322,14 +319,13 @@ impl RustyShelfApp {
             scan_roots: Vec::new(),
             scan_exclusions: Vec::new(),
             scan_seen_paths: Vec::new(),
-            errors: Vec::new(),
+            diagnostics,
             cover_textures: HashMap::new(),
             category_edit: String::new(),
             category_edit_id: None,
             language,
             theme,
             emulators,
-            preferred_emulator,
             css_path,
             css_enabled,
             custom_style,
@@ -351,12 +347,59 @@ impl RustyShelfApp {
             .or_else(|| crate::rom::game_console(game))
     }
 
-    fn default_emulator(&self, game: &Game) -> Option<&String> {
-        self.game_console(game)
-            .and_then(|console| self.console_emulators.get(console))
-            .or(self.preferred_emulator.as_ref())
+    fn category_emulator(&self, game: &Game) -> Option<&Emulator> {
+        crate::emulator::for_category(
+            self.game_console(game),
+            &self.console_emulators,
+            &self.emulators,
+        )
     }
 
+    fn category_emulator_ui(&mut self, ui: &mut egui::Ui, console: &str) {
+        if !crate::rom::assignable_console(console) {
+            return;
+        }
+        let previous = self.console_emulators.get(console).cloned();
+        let mut chosen = previous.clone();
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!(
+                "{} · {console}",
+                tr(
+                    self.language,
+                    "Émulateur de cette catégorie",
+                    "Category emulator"
+                )
+            ));
+            egui::ComboBox::from_id_salt(("category-emulator", console))
+                .selected_text(
+                    chosen
+                        .as_ref()
+                        .and_then(|id| self.emulators.iter().find(|emulator| &emulator.id == id))
+                        .map(|emulator| emulator.name.as_str())
+                        .unwrap_or(tr(self.language, "Aucun · à choisir", "None · choose one")),
+                )
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut chosen, None, tr(self.language, "Aucun", "None"));
+                    for emulator in &self.emulators {
+                        ui.selectable_value(&mut chosen, Some(emulator.id.clone()), &emulator.name);
+                    }
+                });
+            if ui
+                .button(tr(self.language, "Ajouter un émulateur…", "Add emulator…"))
+                .clicked()
+            {
+                self.add_emulator();
+            }
+        });
+        if previous != chosen {
+            if let Some(id) = chosen {
+                self.console_emulators.insert(console.into(), id);
+            } else {
+                self.console_emulators.remove(console);
+            }
+            self.save_mapping("console_emulators", self.console_emulators.clone());
+        }
+    }
     fn save_mapping(&mut self, key: &str, mapping: HashMap<String, String>) {
         if let Some(store) = &self.store {
             match serde_json::to_string(&mapping) {
@@ -473,7 +516,7 @@ impl RustyShelfApp {
         self.scan_control = Some(control);
         self.scan_receiver = Some(receiver);
         self.scan_visited = 0;
-        self.errors.clear();
+        self.diagnostics = ScanDiagnostics::default();
         self.status = tr(
             self.language,
             "Analyse des disques en cours…",
@@ -490,18 +533,23 @@ impl RustyShelfApp {
         let events: Vec<_> = receiver.try_iter().take(8).collect();
         for event in events {
             match event {
-                ScanEvent::Candidate(game) => {
+                ScanEvent::Candidate(mut game) => {
                     self.scan_seen_paths.extend(
                         game.installations
                             .iter()
                             .map(|installation| installation.path.clone()),
                     );
                     if let Some(store) = &self.store {
+                        if let Err(error) = store.reuse_rom_identity(&mut game) {
+                            self.diagnostics.error(error.to_string());
+                            continue;
+                        }
                         if store.is_ignored(&game.id).unwrap_or(false) {
                             continue;
                         }
                         if let Err(error) = store.save_game(&game) {
-                            self.errors.push(error.to_string());
+                            self.diagnostics.error(error.to_string());
+                            continue;
                         }
                     }
                     merge_game_in_memory(&mut self.games, game);
@@ -515,27 +563,40 @@ impl RustyShelfApp {
                     if !path.as_os_str().is_empty() {
                         self.scan_exclusions.push(path.clone());
                     }
-                    if self.errors.len() < 30 {
-                        self.errors.push(format!("{} : {message}", path.display()));
-                    }
+                    self.diagnostics
+                        .error(format!("{} : {message}", path.display()));
+                }
+                ScanEvent::Skipped(path, reason) => {
+                    self.scan_exclusions.push(path.clone());
+                    self.diagnostics.skip(&path, &reason);
                 }
                 ScanEvent::Finished { visited, cancelled } => {
                     self.scan_visited = visited;
                     if !cancelled {
                         if let Some(store) = &self.store {
-                            let _ = store.mark_unseen_under_roots_unavailable(
+                            if let Err(error) = store.mark_unseen_under_roots_unavailable(
                                 &self.scan_roots,
                                 &self.scan_exclusions,
                                 &self.scan_seen_paths,
-                            );
-                            self.games = store
-                                .games()
-                                .map(deduplicate_library)
-                                .unwrap_or_else(|_| self.games.clone());
+                            ) {
+                                self.diagnostics.error(error.to_string());
+                            }
+                            match store.games() {
+                                Ok(games) => self.games = deduplicate_library(games),
+                                Err(error) => self.diagnostics.error(error.to_string()),
+                            }
                         }
                     }
                     self.scan_control = None;
                     self.scan_receiver = None;
+                    if let Some(store) = &self.store {
+                        if let Ok(json) = serde_json::to_string(&self.diagnostics) {
+                            if let Err(error) = store.set_preference("last_scan_diagnostics", &json)
+                            {
+                                self.diagnostics.error(error.to_string());
+                            }
+                        }
+                    }
                     self.status = if cancelled {
                         format!(
                             "{} {visited} {}",
@@ -551,6 +612,17 @@ impl RustyShelfApp {
                             tr(self.language, "éléments parcourus", "items scanned")
                         )
                     };
+                    if self.diagnostics.error_count > 0 {
+                        self.status.push_str(&format!(
+                            " · {} {}",
+                            self.diagnostics.error_count,
+                            tr(
+                                self.language,
+                                "erreur(s) · voir le rapport",
+                                "error(s) · see report"
+                            )
+                        ));
+                    }
                 }
             }
         }
@@ -589,7 +661,7 @@ impl RustyShelfApp {
             working_directory: Some(install_path.clone()),
             launcher_command: None,
         };
-        let game = Game::from_installation(
+        let mut game = Game::from_installation(
             title,
             "Ajout manuel",
             Installation {
@@ -600,6 +672,10 @@ impl RustyShelfApp {
             },
         );
         if let Some(store) = &self.store {
+            if let Err(error) = store.reuse_rom_identity(&mut game) {
+                self.status = error.to_string();
+                return;
+            }
             if store.save_game(&game).is_ok() {
                 self.games = store.games().map(deduplicate_library).unwrap_or_default();
                 self.selected_game = Some(game.id);
@@ -629,10 +705,6 @@ impl RustyShelfApp {
             {
                 Ok(emulators) => {
                     self.emulators = emulators;
-                    if self.preferred_emulator.is_none() {
-                        self.preferred_emulator = Some(emulator.id.clone());
-                        let _ = store.set_preference("preferred_emulator", &emulator.id);
-                    }
                     self.status = tr(self.language, "Émulateur ajouté.", "Emulator added.").into();
                 }
                 Err(error) => {
@@ -958,6 +1030,13 @@ impl RustyShelfApp {
                 }
             });
             self.filter_bar(ui);
+            if let Some(console) = self
+                .selected_category
+                .strip_prefix("console:")
+                .map(str::to_owned)
+            {
+                self.category_emulator_ui(ui, &console);
+            }
             ui.add_space(8.0);
             if self.scan_control.is_some() {
                 ui.horizontal(|ui| {
@@ -1285,7 +1364,9 @@ impl RustyShelfApp {
             return;
         };
         ui.label(RichText::new(&game.title).size(21.0).strong());
-        let category = if game.category == "À confirmer" {
+        let category = if let Some(console) = self.game_console(&game) {
+            console
+        } else if game.category == "À confirmer" {
             tr(self.language, "À confirmer", "To review")
         } else {
             &game.category
@@ -1404,7 +1485,7 @@ impl RustyShelfApp {
             let current_console = self.console_overrides.get(&game.id).cloned();
             let mut chosen_console = current_console.clone();
             egui::ComboBox::from_id_salt(("rom-console", &game.id))
-                .selected_text(self.game_console(&game).unwrap_or("Console à préciser"))
+                .selected_text(self.game_console(&game).unwrap_or(crate::rom::UNCLASSIFIED))
                 .show_ui(ui, |ui| {
                     ui.selectable_value(
                         &mut chosen_console,
@@ -1427,55 +1508,36 @@ impl RustyShelfApp {
                 }
                 self.save_mapping("console_overrides", self.console_overrides.clone());
             }
-            let current_override = self
-                .store
-                .as_ref()
-                .and_then(|store| store.game_emulator(&game.id).ok())
-                .flatten();
-            let default_name = self
-                .default_emulator(&game)
-                .and_then(|id| self.emulators.iter().find(|emulator| &emulator.id == id))
-                .map(|emulator| emulator.name.as_str())
-                .unwrap_or(tr(
-                    self.language,
-                    "Aucun émulateur par défaut",
-                    "No default emulator",
-                ));
-            let mut chosen = current_override.clone();
-            egui::ComboBox::from_id_salt(("game-emulator", &game.id))
-                .selected_text(
-                    current_override
-                        .as_ref()
-                        .and_then(|id| {
-                            self.emulators
-                                .iter()
-                                .find(|emulator| &emulator.id == id)
-                                .map(|emulator| emulator.name.clone())
-                        })
-                        .unwrap_or_else(|| {
-                            format!(
-                                "{}: {default_name}",
-                                tr(self.language, "Par défaut", "Default")
-                            )
-                        }),
-                )
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut chosen,
-                        None,
-                        format!(
-                            "{}: {default_name}",
-                            tr(self.language, "Par défaut", "Default")
-                        ),
-                    );
-                    for emulator in &self.emulators {
-                        ui.selectable_value(&mut chosen, Some(emulator.id.clone()), &emulator.name);
-                    }
-                });
-            if chosen != current_override {
-                if let Some(store) = &self.store {
-                    let _ = store.set_game_emulator(&game.id, chosen.as_deref());
+            let console = self
+                .game_console(&game)
+                .unwrap_or(crate::rom::UNCLASSIFIED)
+                .to_owned();
+            if crate::rom::assignable_console(&console) {
+                let emulator_name = self
+                    .category_emulator(&game)
+                    .map(|emulator| emulator.name.as_str())
+                    .unwrap_or(tr(
+                        self.language,
+                        "Aucun émulateur associé",
+                        "No emulator assigned",
+                    ));
+                ui.label(format!("{console} · {emulator_name}"));
+                if ui
+                    .button(tr(
+                        self.language,
+                        "Configurer cette catégorie",
+                        "Configure category",
+                    ))
+                    .clicked()
+                {
+                    self.selected_category = format!("console:{console}");
                 }
+            } else {
+                ui.label(tr(
+                    self.language,
+                    "Choisis d’abord la catégorie de cette image.",
+                    "Choose this image's category first.",
+                ));
             }
         }
         for installation in &game.installations {
@@ -1489,29 +1551,30 @@ impl RustyShelfApp {
             });
             if crate::rom::console(&installation.path).is_some() && installation.available {
                 if ui
-                    .button(tr(
+                    .add_enabled(
+                        self.category_emulator(&game)
+                            .is_some_and(|emulator| emulator.executable.is_file()),
+                        egui::Button::new(tr(
+                            self.language,
+                            "▶  Lancer avec l’émulateur",
+                            "▶  Launch in emulator",
+                        )),
+                    )
+                    .on_disabled_hover_text(tr(
                         self.language,
-                        "▶  Lancer avec l’émulateur",
-                        "▶  Launch in emulator",
+                        "Classe l’image, puis associe un émulateur installé à sa catégorie.",
+                        "Classify the image, then assign an installed emulator to its category.",
                     ))
                     .clicked()
                 {
-                    let emulator_id = self
-                        .store
-                        .as_ref()
-                        .and_then(|store| store.game_emulator(&game.id).ok())
-                        .flatten()
-                        .or_else(|| self.default_emulator(&game).cloned());
-                    if let Some(emulator) = emulator_id
-                        .and_then(|id| self.emulators.iter().find(|emulator| emulator.id == id))
-                    {
+                    if let Some(emulator) = self.category_emulator(&game) {
                         launch_image =
                             Some((emulator.executable.clone(), installation.path.clone()));
                     } else {
                         self.status = tr(
                             self.language,
-                            "Choisis un émulateur dans les paramètres.",
-                            "Choose an emulator in Settings.",
+                            "Choisis un émulateur dans la catégorie de cette image.",
+                            "Choose an emulator in this image category.",
                         )
                         .into();
                     }
@@ -1648,30 +1711,8 @@ impl RustyShelfApp {
                 ui.small(tr(self.language, "Syntaxe : :root { --accent: #e5a270; --radius: 12px; } · CSS complet non pris en charge.", "Syntax: :root { --accent: #e5a270; --radius: 12px; } · Full CSS is not supported."));
                 ui.separator();
                 ui.heading(tr(self.language, "Émulation", "Emulation"));
-                let previous_emulator = self.preferred_emulator.clone();
-                egui::ComboBox::from_label(tr(self.language, "Émulateur préféré par défaut", "Default preferred emulator"))
-                    .selected_text(self.preferred_emulator.as_ref().and_then(|id| self.emulators.iter().find(|emu| &emu.id == id).map(|emu| emu.name.clone())).unwrap_or_else(|| tr(self.language, "À choisir", "Choose one").into()))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.preferred_emulator, None, tr(self.language, "Aucun", "None"));
-                        for emulator in &self.emulators { ui.selectable_value(&mut self.preferred_emulator, Some(emulator.id.clone()), &emulator.name); }
-                    });
-                if previous_emulator != self.preferred_emulator {
-                    if let Some(store) = &self.store { let _ = store.set_preference("preferred_emulator", self.preferred_emulator.as_deref().unwrap_or("")); }
-                }
-                if ui.button(tr(self.language, "＋ Ajouter un émulateur…", "＋ Add emulator…")).clicked() { self.add_emulator(); }
-                let consoles: std::collections::BTreeSet<String> = self.games.iter().filter_map(|game| self.game_console(game).map(str::to_owned)).collect();
-                let previous_console_emulators = self.console_emulators.clone();
-                for console in consoles {
-                    let mut chosen = self.console_emulators.get(&console).cloned();
-                    egui::ComboBox::from_id_salt(("console-emulator", &console))
-                        .selected_text(format!("{} : {}", console, chosen.as_ref().and_then(|id| self.emulators.iter().find(|emulator| &emulator.id == id)).map(|emulator| emulator.name.as_str()).unwrap_or(tr(self.language, "Défaut général", "Global default"))))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut chosen, None, tr(self.language, "Défaut général", "Global default"));
-                            for emulator in &self.emulators { ui.selectable_value(&mut chosen, Some(emulator.id.clone()), &emulator.name); }
-                        });
-                    if let Some(id) = chosen { self.console_emulators.insert(console, id); } else { self.console_emulators.remove(&console); }
-                }
-                if previous_console_emulators != self.console_emulators { self.save_mapping("console_emulators", self.console_emulators.clone()); }
+                ui.label(tr(self.language, "Les associations se règlent dans chaque catégorie de ROMs ou d’images. Ajouter un émulateur ne l’associe à aucun jeu automatiquement.", "Assignments are configured inside each ROM or image category. Adding an emulator does not assign it automatically."));
+                if ui.button(tr(self.language, "Ajouter un émulateur disponible…", "Add available emulator…")).clicked() { self.add_emulator(); }
                 if self.emulators.is_empty() {
                     ui.label(tr(self.language, "Aucun émulateur détecté. Ajoute son exécutable ci-dessus.", "No emulator found. Add its executable above."));
                 } else {
@@ -1694,6 +1735,7 @@ impl RustyShelfApp {
                 }
                 ui.label(tr(self.language, "Choisis les disques montés à analyser. Les jeux et images disque trouvés restent locaux.", "Choose mounted drives to scan. Games and disc images stay on this device."));
                 egui::ScrollArea::vertical()
+                    .id_salt("scan-volumes")
                     .max_height(220.0)
                     .show(ui, |ui| {
                         for (index, volume) in self.volumes.iter().enumerate() {
@@ -1767,26 +1809,29 @@ impl RustyShelfApp {
                 if self.scan_control.is_some() {
                     ui.label(format!("{} {} · {}", self.scan_visited, tr(self.language, "éléments parcourus", "items scanned"), self.scan_current));
                 }
-                if !self.errors.is_empty() {
-                    ui.separator();
-                    ui.label(
-                        RichText::new(format!(
-                            "{} {}",
-                            self.errors.len(),
-                            tr(self.language, "avertissement(s)", "warning(s)")
-                        ))
-                            .color(Color32::YELLOW),
-                    );
-                    egui::ScrollArea::vertical()
-                        .max_height(120.0)
-                        .show(ui, |ui| {
-                            for error in &self.errors {
-                                ui.label(error);
-                            }
-                        });
-                }
                 ui.separator();
-                ui.heading(tr(self.language, "Données et sauvegarde", "Data and backup"));
+                ui.heading(tr(self.language, "Rapport du dernier scan", "Last scan report"));
+                ui.label(format!("{} {} · {} {}", self.diagnostics.error_count, tr(self.language, "erreur(s)", "error(s)"), self.diagnostics.skipped_count, tr(self.language, "chemin(s) non analysé(s)", "skipped path(s)")));
+                if self.diagnostics.skipped_count > 0 {
+                    ui.collapsing(tr(self.language, "Dossiers protégés ou indisponibles", "Protected or unavailable folders"), |ui| {
+                        ui.label(tr(self.language, "Ces chemins n’ont pas pu être analysés. Les jeux déjà enregistrés sont conservés.", "These paths could not be scanned. Existing games are preserved."));
+                        for message in &self.diagnostics.skipped { ui.label(message); }
+                    });
+                }
+                if self.diagnostics.error_count > 0 {
+                    ui.collapsing(tr(self.language, "Détails des erreurs", "Error details"), |ui| {
+                        for error in &self.diagnostics.errors { ui.colored_label(Color32::from_rgb(220, 85, 75), error); }
+                    });
+                }
+                if ui.button(tr(self.language, "Exporter le rapport…", "Export report…")).clicked() {
+                    if let Some(path) = rfd::FileDialog::new().set_file_name("rustyshelf-scan.txt").save_file() {
+                        self.status = match std::fs::write(&path, self.diagnostics.report()) {
+                            Ok(()) => format!("{} : {}", tr(self.language, "Rapport enregistré", "Report saved"), path.display()),
+                            Err(error) => error.to_string(),
+                        };
+                    }
+                }
+                ui.separator();                ui.heading(tr(self.language, "Données et sauvegarde", "Data and backup"));
                 ui.label(tr(self.language, "La sauvegarde conserve la bibliothèque et les réglages. L’export JSON permet de consulter le catalogue dans un autre outil.", "Backup includes your library and settings. JSON export lets you read your catalog in another tool."));
                 if ui.add_enabled(self.scan_control.is_none() && self.store.is_some(), egui::Button::new(tr(self.language, "Sauvegarder la bibliothèque…", "Back up library…"))).clicked() {
                     if let Some(path) = rfd::FileDialog::new().set_file_name("rustyshelf-backup.sqlite3").add_filter("SQLite", &["sqlite3"]).save_file() {
@@ -1926,7 +1971,15 @@ fn truncate_title(title: &str, max_chars: usize) -> String {
 fn merge_game_in_memory(games: &mut Vec<Game>, incoming: Game) {
     let target = games.iter_mut().find(|current| {
         current.id == incoming.id
-            || (normalized_title(&current.title) == normalized_title(&incoming.title)
+            || (!current
+                .installations
+                .iter()
+                .any(|installation| crate::rom::is_image(&installation.path))
+                && !incoming
+                    .installations
+                    .iter()
+                    .any(|installation| crate::rom::is_image(&installation.path))
+                && normalized_title(&current.title) == normalized_title(&incoming.title)
                 && crate::rom::game_console(current) == crate::rom::game_console(&incoming))
             || current.installations.iter().any(|existing| {
                 incoming
@@ -2038,8 +2091,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn same_named_images_are_not_merged_based_on_guessed_console() {
+        let library = ["/roms/PS2/game.iso", "/roms/GameCube/game.iso"]
+            .into_iter()
+            .map(|path| {
+                Game::from_installation(
+                    "Game",
+                    "ROM",
+                    Installation {
+                        path: path.into(),
+                        launcher: Launcher::Unknown,
+                        launch_profile: None,
+                        available: true,
+                    },
+                )
+            })
+            .collect();
+        assert_eq!(deduplicate_library(library).len(), 2);
+    }
+
+    #[test]
     fn library_and_options_render_at_compact_and_wide_sizes() {
         let ctx = egui::Context::default();
+        ctx.options_mut(|options| options.warn_on_id_clash = true);
         let games = (0..40)
             .map(|index| {
                 Game::from_installation(
@@ -2072,14 +2146,13 @@ mod tests {
             scan_roots: vec![],
             scan_exclusions: vec![],
             scan_seen_paths: vec![],
-            errors: vec![],
+            diagnostics: ScanDiagnostics::default(),
             cover_textures: HashMap::new(),
             category_edit: String::new(),
             category_edit_id: None,
             language: Language::French,
             theme: Theme::Dark,
             emulators: vec![],
-            preferred_emulator: None,
             css_path: None,
             css_enabled: true,
             custom_style: Some(CustomStyle::parse(crate::style::EXAMPLE).unwrap()),
@@ -2089,6 +2162,16 @@ mod tests {
             console_emulators: HashMap::new(),
         };
         app.refresh_appearance(&ctx);
+        app.volumes = vec![Volume {
+            root: "C:/".into(),
+            name: "Système".into(),
+            filesystem: "NTFS".into(),
+            removable: false,
+        }];
+        app.selected_volumes = vec![true];
+        app.diagnostics
+            .skip(std::path::Path::new("C:/protected"), "Accès refusé");
+        app.diagnostics.error("Erreur de test".into());
         app.games[0].category = "Plateforme".into();
         app.games[0].installations[0].launcher = Launcher::Steam;
         app.selected_category = "Steam".into();
@@ -2110,6 +2193,26 @@ mod tests {
                 },
             );
             assert!(!output.shapes.is_empty());
+            fn check_ids(shape: &egui::epaint::Shape) {
+                match shape {
+                    egui::epaint::Shape::Text(text) => {
+                        let text = text.galley.text();
+                        assert!(
+                            !(text.contains("use of") && text.contains(" ID ")),
+                            "{text}"
+                        );
+                    }
+                    egui::epaint::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            check_ids(shape);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for shape in &output.shapes {
+                check_ids(&shape.shape);
+            }
         }
     }
 

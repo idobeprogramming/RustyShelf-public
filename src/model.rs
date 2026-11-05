@@ -96,6 +96,12 @@ impl Game {
 }
 
 pub fn game_id(title: &str, path: &std::path::Path) -> String {
+    if crate::rom::is_image(path) {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        path.hash(&mut hasher);
+        return format!("rom-image-{:016x}", hasher.finish());
+    }
     if let Some(console) = crate::rom::console(path) {
         format!("rom-{}", stable_id(&format!("{console}:{title}"), path))
     } else {

@@ -1,4 +1,5 @@
 mod app;
+mod diagnostics;
 mod emulator;
 mod library;
 mod model;

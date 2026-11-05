@@ -43,7 +43,53 @@ impl Store {
         )?;
         let store = Self { connection };
         store.merge_legacy_duplicates()?;
+        store.split_legacy_image_groups()?;
         Ok(store)
+    }
+
+    fn split_legacy_image_groups(&self) -> rusqlite::Result<()> {
+        let games = self.games()?;
+        let tx = self.connection.unchecked_transaction()?;
+        let mut overrides: std::collections::HashMap<String, String> = self
+            .preference("console_overrides")?
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default();
+        let mut changed = false;
+        for game in games {
+            if game.installations.len() < 2 {
+                continue;
+            }
+            let has_pc_install = game
+                .installations
+                .iter()
+                .any(|installation| !crate::rom::is_image(&installation.path));
+            let images = game
+                .installations
+                .iter()
+                .filter(|installation| crate::rom::is_image(&installation.path));
+            for installation in images.skip(if has_pc_install { 0 } else { 1 }) {
+                let id = crate::model::game_id(&game.title, &installation.path);
+                if id == game.id {
+                    continue;
+                }
+                tx.execute("INSERT OR IGNORE INTO games(id,title,category,favorite,confirmed,cover_path,category_custom) SELECT ?1,title,category,favorite,confirmed,cover_path,category_custom FROM games WHERE id=?2", params![id, game.id])?;
+                tx.execute("INSERT OR IGNORE INTO installations(game_id,path,launcher,profile,available) SELECT ?1,path,launcher,profile,available FROM installations WHERE game_id=?2 AND path=?3", params![id, game.id, installation.path.to_string_lossy()])?;
+                tx.execute(
+                    "DELETE FROM installations WHERE game_id=?1 AND path=?2",
+                    params![game.id, installation.path.to_string_lossy()],
+                )?;
+                if let Some(console) = overrides.get(&game.id).cloned() {
+                    overrides.entry(id).or_insert(console);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            if let Ok(json) = serde_json::to_string(&overrides) {
+                tx.execute("INSERT INTO preferences(key,value) VALUES('console_overrides',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json])?;
+            }
+        }
+        tx.commit()
     }
 
     fn merge_legacy_duplicates(&self) -> rusqlite::Result<()> {
@@ -153,30 +199,22 @@ impl Store {
         rows.collect()
     }
 
-    pub fn set_game_emulator(
-        &self,
-        game_id: &str,
-        emulator_id: Option<&str>,
-    ) -> rusqlite::Result<()> {
-        if let Some(emulator_id) = emulator_id {
-            self.connection.execute("INSERT INTO game_emulators(game_id,emulator_id) VALUES(?1,?2) ON CONFLICT(game_id) DO UPDATE SET emulator_id=excluded.emulator_id", params![game_id, emulator_id])?;
-        } else {
-            self.connection
-                .execute("DELETE FROM game_emulators WHERE game_id=?1", [game_id])?;
+    pub fn reuse_rom_identity(&self, game: &mut Game) -> rusqlite::Result<()> {
+        if crate::rom::game_console(game).is_none() {
+            return Ok(());
+        }
+        for installation in &game.installations {
+            let id: Option<String> = self.connection.query_row(
+                "SELECT game_id FROM installations JOIN games ON games.id=installations.game_id WHERE path=?1 ORDER BY confirmed DESC, favorite DESC LIMIT 1",
+                [installation.path.to_string_lossy()], |row| row.get(0),
+            ).optional()?;
+            if let Some(id) = id {
+                game.id = id;
+                break;
+            }
         }
         Ok(())
     }
-
-    pub fn game_emulator(&self, game_id: &str) -> rusqlite::Result<Option<String>> {
-        self.connection
-            .query_row(
-                "SELECT emulator_id FROM game_emulators WHERE game_id=?1",
-                [game_id],
-                |row| row.get(0),
-            )
-            .optional()
-    }
-
     pub fn save_game(&self, game: &Game) -> rusqlite::Result<()> {
         let tx = self.connection.unchecked_transaction()?;
         let existing: Option<(bool, Option<String>, String, bool, bool)> = tx
@@ -387,6 +425,79 @@ fn parse_launcher(value: &str) -> Launcher {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn separates_legacy_image_groups_without_losing_favorites_or_manual_categories() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("library.db");
+        let store = Store::open(&path).unwrap();
+        let mut game = Game::from_installation(
+            "Adventure",
+            "ROM · PlayStation 2",
+            Installation {
+                path: temp.path().join("one.iso"),
+                launcher: Launcher::Unknown,
+                launch_profile: None,
+                available: true,
+            },
+        );
+        game.id = "rom-old-group".into();
+        game.favorite = true;
+        game.installations.push(Installation {
+            path: temp.path().join("two.iso"),
+            launcher: Launcher::Unknown,
+            launch_profile: None,
+            available: true,
+        });
+        store.save_game(&game).unwrap();
+        store
+            .set_preference("console_overrides", "{\"rom-old-group\":\"PlayStation 2\"}")
+            .unwrap();
+        drop(store);
+        for _ in 0..2 {
+            let reopened = Store::open(&path).unwrap();
+            let games = reopened.games().unwrap();
+            assert_eq!(games.len(), 2);
+            assert!(games
+                .iter()
+                .all(|game| game.favorite && game.installations.len() == 1));
+            let categories: std::collections::HashMap<String, String> =
+                serde_json::from_str(&reopened.preference("console_overrides").unwrap().unwrap())
+                    .unwrap();
+            assert!(games
+                .iter()
+                .all(|game| categories.get(&game.id).map(String::as_str) == Some("PlayStation 2")));
+        }
+    }
+
+    #[test]
+    fn rescanning_an_old_image_preserves_its_identity_and_corrections() {
+        let temp = tempdir().unwrap();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        let install = Installation {
+            path: temp.path().join("game.iso"),
+            launcher: Launcher::Unknown,
+            launch_profile: None,
+            available: true,
+        };
+        let mut old = Game::from_installation("Same title", "ROM · PlayStation 2", install.clone());
+        old.id = "rom-legacy-id".into();
+        store.save_game(&old).unwrap();
+        store.set_favorite(&old.id, true).unwrap();
+        let mut rescanned =
+            Game::from_installation("Same title", "ROM · Images à classer", install);
+        assert_ne!(rescanned.id, old.id);
+        store.reuse_rom_identity(&mut rescanned).unwrap();
+        assert_eq!(rescanned.id, old.id);
+        store.save_game(&rescanned).unwrap();
+        let library = store.games().unwrap();
+        assert_eq!(library.len(), 1);
+        assert!(library[0].favorite);
+        assert_eq!(
+            crate::rom::game_console(&library[0]),
+            Some(crate::rom::UNCLASSIFIED)
+        );
+    }
 
     #[test]
     fn backup_preserves_preferences_and_rejects_the_active_database() {
@@ -639,38 +750,5 @@ mod tests {
         assert!(migrated[0].favorite);
         assert_eq!(migrated[0].installations.len(), 2);
         assert!(migrated[0].confirmed);
-    }
-
-    #[test]
-    fn stores_default_and_per_game_emulator_choices() {
-        let temp = tempdir().unwrap();
-        let store = Store::open(temp.path().join("library.db")).unwrap();
-        let game = Game::from_installation(
-            "Disc Game",
-            "Image disque",
-            Installation {
-                path: PathBuf::from("/roms/game.iso"),
-                launcher: Launcher::Unknown,
-                launch_profile: None,
-                available: true,
-            },
-        );
-        store.save_game(&game).unwrap();
-        let emulator = crate::model::Emulator::new("Dolphin", PathBuf::from("/usr/bin/dolphin"));
-        store.save_emulator(&emulator).unwrap();
-        store
-            .set_preference("preferred_emulator", &emulator.id)
-            .unwrap();
-        store
-            .set_game_emulator(&game.id, Some(&emulator.id))
-            .unwrap();
-        assert_eq!(
-            store.preference("preferred_emulator").unwrap().as_deref(),
-            Some(emulator.id.as_str())
-        );
-        assert_eq!(
-            store.game_emulator(&game.id).unwrap().as_deref(),
-            Some(emulator.id.as_str())
-        );
     }
 }

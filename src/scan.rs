@@ -61,6 +61,7 @@ pub struct ScanProgress {
 pub enum ScanEvent {
     Candidate(Game),
     Error(PathBuf, String),
+    Skipped(PathBuf, String),
     Progress(ScanProgress),
     Finished { visited: usize, cancelled: bool },
 }
@@ -88,7 +89,7 @@ pub fn scan_roots(
             break;
         }
         if !root.exists() {
-            emit(ScanEvent::Error(
+            emit(ScanEvent::Skipped(
                 root.clone(),
                 "Disque ou dossier indisponible".into(),
             ));
@@ -129,7 +130,19 @@ pub fn scan_roots(
                 }
                 Err(error) => {
                     let path = error.path().unwrap_or(root).to_path_buf();
-                    emit(ScanEvent::Error(path, error.to_string()));
+                    if error.io_error().is_some_and(|error| {
+                        matches!(
+                            error.kind(),
+                            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
+                        )
+                    }) {
+                        emit(ScanEvent::Skipped(
+                            path,
+                            "Dossier protégé ou devenu indisponible".into(),
+                        ));
+                    } else {
+                        emit(ScanEvent::Error(path, error.to_string()));
+                    }
                 }
             }
         }
@@ -321,7 +334,6 @@ fn candidate_from_disc_image(path: &Path) -> Option<Game> {
     if path
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("iso"))
-        && crate::rom::console(path) == Some("Console à préciser")
         && !path.ancestors().skip(1).any(|folder| {
             folder.file_name().is_some_and(|name| {
                 matches!(
@@ -331,7 +343,9 @@ fn candidate_from_disc_image(path: &Path) -> Option<Game> {
                         | "roms"
                         | "isos"
                         | "emulation"
+                        | "ps1"
                         | "ps2"
+                        | "ps3"
                         | "psp"
                         | "wii"
                         | "gamecube"
@@ -345,7 +359,7 @@ fn candidate_from_disc_image(path: &Path) -> Option<Game> {
         title,
         format!(
             "ROM · {}",
-            crate::rom::console(path).unwrap_or("Console à préciser")
+            crate::rom::console(path).unwrap_or(crate::rom::UNCLASSIFIED)
         ),
         Installation {
             path: path.to_path_buf(),
@@ -412,6 +426,23 @@ mod tests {
     use super::*;
     use std::{fs, sync::mpsc};
     use tempfile::tempdir;
+
+    #[test]
+    fn unavailable_roots_are_reported_as_skipped_not_failed() {
+        let temp = tempdir().unwrap();
+        let mut skipped = 0;
+        scan_roots(
+            &[temp.path().join("unplugged")],
+            &[],
+            &ScanControl::default(),
+            |event| match event {
+                ScanEvent::Skipped(_, _) => skipped += 1,
+                ScanEvent::Error(_, message) => panic!("{message}"),
+                _ => {}
+            },
+        );
+        assert_eq!(skipped, 1);
+    }
 
     #[test]
     fn scans_console_roms_and_ignores_markdown_documents() {

@@ -32,8 +32,13 @@ impl Filters {
             .iter()
             .any(|installation| installation.available);
         let query = query.trim().to_lowercase();
+        let category = if console.is_some() && game.category.starts_with("ROM · ") {
+            ""
+        } else {
+            &game.category
+        };
         let searchable =
-            format!("{} {} {}", game.title, game.category, console.unwrap_or("")).to_lowercase();
+            format!("{} {} {}", game.title, category, console.unwrap_or("")).to_lowercase();
         searchable.contains(&query)
             && match self.kind {
                 GameKind::All => true,
