@@ -309,7 +309,7 @@ impl Store {
                 "INSERT INTO installations(game_id,path,launcher,profile,available) VALUES(?1,?2,?3,?4,?5)
                  ON CONFLICT(game_id,path) DO UPDATE SET
                  launcher=CASE WHEN (excluded.launcher='unknown' AND installations.launcher<>'unknown') OR (excluded.launcher='manual' AND installations.launcher NOT IN ('unknown','manual')) THEN installations.launcher ELSE excluded.launcher END,
-                 profile=CASE WHEN (excluded.launcher='unknown' AND installations.launcher<>'unknown') OR (excluded.launcher='manual' AND installations.launcher NOT IN ('unknown','manual')) THEN installations.profile ELSE COALESCE(excluded.profile,installations.profile) END, available=excluded.available",
+                 profile=CASE WHEN excluded.launcher='unknown' AND installations.launcher<>'unknown' THEN installations.profile WHEN excluded.launcher='manual' AND installations.launcher NOT IN ('unknown','manual') THEN COALESCE(installations.profile,excluded.profile) ELSE COALESCE(excluded.profile,installations.profile) END, available=excluded.available",
                 params![game.id, installation.path.to_string_lossy(), launcher_name(&installation.launcher), profile, installation.available],
             )?;
         }
@@ -606,6 +606,39 @@ mod tests {
             Some(&profile)
         );
         assert!(games[0].installations[0].available);
+    }
+
+    #[test]
+    fn manual_addition_can_supply_a_missing_official_launch_profile() {
+        let temp = tempdir().unwrap();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        let game = Game::from_installation(
+            "Official title",
+            "GOG",
+            Installation {
+                path: temp.path().join("game"),
+                launcher: Launcher::Gog,
+                launch_profile: None,
+                available: true,
+            },
+        );
+        store.save_game(&game).unwrap();
+        let mut manual = game.clone();
+        manual.installations[0].launcher = Launcher::Manual;
+        let profile = crate::model::LaunchProfile {
+            command: temp.path().join("game/run.exe"),
+            arguments: vec![],
+            working_directory: None,
+            launcher_command: None,
+        };
+        manual.installations[0].launch_profile = Some(profile.clone());
+        store.save_manual_game(&mut manual).unwrap();
+        let loaded = store.games().unwrap();
+        assert_eq!(loaded[0].installations[0].launcher, Launcher::Gog);
+        assert_eq!(
+            loaded[0].installations[0].launch_profile.as_ref(),
+            Some(&profile)
+        );
     }
 
     #[test]
