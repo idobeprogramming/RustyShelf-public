@@ -32,7 +32,22 @@ pub const CONSOLES: &[&str] = &[
 pub fn game_console(game: &Game) -> Option<&'static str> {
     game.installations
         .iter()
-        .find_map(|installation| console(&installation.path))
+        .find_map(|installation| {
+            // The ROM identity is assigned only after classification. Preserve
+            // accepted .md cartridges without rereading their header every frame
+            // or relying on a category the user may have renamed.
+            if game.id.starts_with("rom-")
+                && !game.id.starts_with("rom-image-")
+                && installation
+                    .path
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+            {
+                Some("Mega Drive")
+            } else {
+                console(&installation.path)
+            }
+        })
         .or_else(|| {
             game.category.strip_prefix("ROM · ").and_then(|category| {
                 CONSOLES
@@ -176,6 +191,40 @@ pub fn assignable_console(console: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepted_md_rom_keeps_its_console_with_custom_category_and_offline_disk() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("Adventure.md");
+        let mut bytes = [0u8; 0x104];
+        bytes[0x100..].copy_from_slice(b"SEGA");
+        std::fs::write(&path, bytes).unwrap();
+        let mut game = Game::from_installation(
+            "Adventure",
+            "ROM · Mega Drive",
+            crate::model::Installation {
+                path: path.clone(),
+                launcher: crate::model::Launcher::Unknown,
+                launch_profile: None,
+                available: true,
+            },
+        );
+        game.category = "Mes favoris rétro".into();
+        assert_eq!(game_console(&game), Some("Mega Drive"));
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(game_console(&game), Some("Mega Drive"));
+        let document = Game::from_installation(
+            "README",
+            "Documents",
+            crate::model::Installation {
+                path: temp.path().join("README.md"),
+                launcher: crate::model::Launcher::Manual,
+                launch_profile: None,
+                available: false,
+            },
+        );
+        assert_eq!(game_console(&document), None);
+    }
 
     #[test]
     fn cartridge_detection_checks_headers_without_trusting_extensions() {
