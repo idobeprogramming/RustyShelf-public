@@ -118,6 +118,54 @@ pub fn within_scan_scope(
     games
 }
 
+// Split a Windows-style argument string without passing it to a shell.
+fn split_arguments(text: &str) -> Result<Vec<String>, String> {
+    let mut chars = text.chars().peekable();
+    let mut result = Vec::new();
+    let mut argument = String::new();
+    let mut quoted = false;
+    let mut started = false;
+    while let Some(ch) = chars.next() {
+        if ch.is_whitespace() && !quoted {
+            if started {
+                result.push(std::mem::take(&mut argument));
+                started = false;
+            }
+            continue;
+        }
+        started = true;
+        match ch {
+            '"' => quoted = !quoted,
+            '\\' => {
+                let mut count = 1;
+                while chars.peek() == Some(&'\\') {
+                    chars.next();
+                    count += 1;
+                }
+                if chars.peek() == Some(&'"') {
+                    argument.extend(std::iter::repeat_n('\\', count / 2));
+                    chars.next();
+                    if count % 2 == 0 {
+                        quoted = !quoted;
+                    } else {
+                        argument.push('"');
+                    }
+                } else {
+                    argument.extend(std::iter::repeat_n('\\', count));
+                }
+            }
+            _ => argument.push(ch),
+        }
+    }
+    if quoted {
+        return Err("Guillemet non fermé dans les arguments de lancement".into());
+    }
+    if started {
+        result.push(argument);
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
