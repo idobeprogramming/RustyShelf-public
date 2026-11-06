@@ -2306,16 +2306,6 @@ fn truncate_title(title: &str, max_chars: usize) -> String {
 fn merge_game_in_memory(games: &mut Vec<Game>, incoming: Game) {
     let target = games.iter_mut().find(|current| {
         current.id == incoming.id
-            || (!current
-                .installations
-                .iter()
-                .any(|installation| crate::rom::is_image(&installation.path))
-                && !incoming
-                    .installations
-                    .iter()
-                    .any(|installation| crate::rom::is_image(&installation.path))
-                && normalized_title(&current.title) == normalized_title(&incoming.title)
-                && crate::rom::game_console(current) == crate::rom::game_console(&incoming))
             || current.installations.iter().any(|existing| {
                 incoming
                     .installations
@@ -2366,14 +2356,6 @@ fn deduplicate_library(mut games: Vec<Game>) -> Vec<Game> {
     }
     result.sort_by_key(|game| game.title.to_lowercase());
     result
-}
-
-fn normalized_title(title: &str) -> String {
-    title
-        .chars()
-        .filter(|character| character.is_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect()
 }
 
 fn same_path(left: &std::path::Path, right: &std::path::Path) -> bool {
@@ -2435,6 +2417,29 @@ impl eframe::App for RustyShelfApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn distinct_titles_are_not_merged_by_removing_spaces_and_punctuation() {
+        let games: Vec<_> = ["A-B", "AB", "A B"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, title)| {
+                Game::from_installation(
+                    title,
+                    "Steam",
+                    Installation {
+                        path: PathBuf::from(format!("/games/{index}")),
+                        launcher: Launcher::Steam,
+                        launch_profile: None,
+                        available: true,
+                    },
+                )
+            })
+            .collect();
+        let library = deduplicate_library(games);
+        assert_eq!(library.len(), 3);
+        assert!(library.iter().all(|game| game.installations.len() == 1));
+    }
 
     #[test]
     fn same_named_images_are_not_merged_based_on_guessed_console() {
