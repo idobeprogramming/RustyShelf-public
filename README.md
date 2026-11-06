@@ -9,6 +9,7 @@ RustyShelf est une bibliothèque de jeux de bureau écrite en Rust. Elle rassemb
 - **Scanner un dossier** : dans les options, choisir **Scanner un dossier…**. Seul son contenu est parcouru (y compris les manifestes Steam/GOG présents), sans recherche dans les catalogues des autres lanceurs. Les jeux hors de ce dossier restent inchangés.
 - **Traiter les candidats par lot** : dans **À confirmer**, cocher les cartes ou utiliser **Sélectionner les résultats**, puis **Confirmer** ou **Ignorer**. Seuls les éléments sélectionnés et encore non confirmés sont traités ; changer de filtre retire de la sélection les résultats masqués. Les fichiers des jeux ne sont jamais supprimés. Les éléments ignorés peuvent être restaurés depuis les options.
 - **Organiser** : rechercher, filtrer par source, modifier une catégorie, marquer un favori, ajouter un jeu et choisir une image locale.
+- **Renommer** : ouvrir la fiche d’un jeu, puis **Modifier le nom**. Le nom choisi reste conservé après les scans et redémarrages. **Rétablir le nom détecté** annule cette correction. Aucun fichier de jeu n’est renommé ; deux jeux portant le même nom personnalisé restent distincts.
 - **Lancer** : utiliser le lien Steam, Heroic ou Lutris disponible, ou lancer directement le chemin enregistré. Sous Linux, Proton/Wine doit déjà être configuré dans le lanceur.
 - **Images disque** : les fichiers ISO, CHD, CSO, WBFS, GCZ, CUE, PBP, CDI, NRG et MDF sont proposés dans **À confirmer**, puis dans **Images à classer** après confirmation. Choisir la catégorie de chaque image depuis sa fiche, puis ouvrir cette catégorie pour lui associer un émulateur. RustyShelf transmet le chemin de l’image à cet émulateur, qui doit être installé et compatible avec le format.
 - **Personnaliser** : options de langue français/anglais et thèmes Nocturne, Aurore, Rétro, Horizon, Brise et Prisme. Le thème Prisme dessine des panneaux translucides dans l’application.
@@ -34,6 +35,8 @@ cargo run
 ```
 
 Pour créer une archive de distribution, exécuter `.\build-windows.ps1`.
+
+La version de distribution Windows ouvre uniquement la fenêtre graphique. Les compilations de développement conservent la console pour les diagnostics.
 
 ## CachyOS et autres distributions Linux
 

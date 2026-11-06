@@ -141,3 +141,11 @@ Validation de ce lot : **84 tests**, formatage et Clippy passent sous Windows. S
 - L’ouverture d’un dossier ou d’un lien utilise le mode détaché de la dépendance existante `open`. L’interface n’attend plus toute la durée de vie du lanceur. Cette API vérifie brièvement les échecs immédiats ; un échec tardif du lanceur ne peut pas être rapporté comme une validation du démarrage du jeu.
 
 Validation : **85 tests**, formatage et Clippy passent. L’échec `.md` a été observé avant correction. Les associations du bureau doivent être présentes sur la machine ; aucun jeu n’a été lancé pour les vérifier et aucun essai natif Flatpak/CachyOS n’est revendiqué.
+
+## Noms personnalisés et distribution Windows
+
+- La fiche permet de renommer un jeu puis de rétablir son dernier nom détecté. Une table locale séparée conserve la correction, sans modifier le titre source utilisé pour les identifiants et les migrations. Le chargement conserve une requête avec jointures. Les anciens catalogues acquièrent cette table sans perdre leurs données ; les migrations de fiches transfèrent aussi leurs noms personnalisés.
+- Les résultats de scan utilisent le nom personnalisé dès leur affichage intermédiaire. Les tests couvrent ce cas, les espaces/Unicode, le refus d’un nom vide, le redémarrage, le retour au titre source et deux fiches renommées à l’identique sans fusion.
+- L’exécutable Windows optimisé utilise le sous-système graphique ; les versions de développement conservent la console. Le sous-système est vérifié dans l’en-tête du binaire de distribution, sans lancer de jeu.
+
+Validation : **88 tests**, formatage et Clippy passent sous Windows. Le renommage ne touche aucun fichier de jeu. La validation graphique native Windows/CachyOS reste distincte des tests de rendu egui existants.

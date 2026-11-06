@@ -66,5 +66,7 @@ Une tâche à la fois : comprendre, modifier, vérifier les critères, puis cré
 60. [x] Rechercher aussi par disque et dossier d’installation.
 61. [x] Conserver la console des ROMs `.md` après changement de catégorie et déconnexion du disque.
 62. [x] Utiliser les associations système pour Heroic/Lutris et ne pas attendre la fermeture des lanceurs.
+63. [x] Renommer un jeu sans écraser son nom détecté ni perdre ce choix après un scan.
+64. [x] Distribuer un exécutable Windows graphique sans console supplémentaire.
 
 Critères : formatage, tests concernés, `cargo test`, Clippy sans avertissement. Chaque lot autonome produit un commit séparé. Le pipeline CI exécute ces contrôles et construit les deux paquets à chaque push ou pull request.
