@@ -271,6 +271,10 @@ impl Store {
         restore_ignored: bool,
     ) -> rusqlite::Result<()> {
         let tx = self.connection.unchecked_transaction()?;
+        let preserve_launcher_metadata = restore_ignored && tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM installations WHERE game_id=?1 AND launcher NOT IN ('unknown','manual'))",
+            [&game.id], |row| row.get::<_, bool>(0),
+        )?;
         let existing: Option<(bool, Option<String>, String, bool, bool)> = tx
             .query_row(
                 "SELECT favorite, cover_path, category, category_custom, confirmed FROM games WHERE id=?1",
@@ -288,13 +292,13 @@ impl Store {
         });
         let category = existing
             .as_ref()
-            .filter(|row| row.3 || (row.4 && !game.confirmed))
+            .filter(|row| row.3 || (row.4 && (!game.confirmed || preserve_launcher_metadata)))
             .map_or_else(|| game.category.clone(), |row| row.2.clone());
         tx.execute(
             "INSERT INTO games(id,title,category,favorite,confirmed,cover_path) VALUES(?1,?2,?3,?4,?5,?6)
-             ON CONFLICT(id) DO UPDATE SET title=CASE WHEN games.confirmed=1 AND excluded.confirmed=0 THEN games.title ELSE excluded.title END, category=excluded.category,
+             ON CONFLICT(id) DO UPDATE SET title=CASE WHEN games.confirmed=1 AND (excluded.confirmed=0 OR ?7) THEN games.title ELSE excluded.title END, category=excluded.category,
              confirmed=MAX(excluded.confirmed,games.confirmed), cover_path=COALESCE(excluded.cover_path,games.cover_path)",
-            params![game.id, game.title, category, favorite, game.confirmed, cover],
+            params![game.id, game.title, category, favorite, game.confirmed, cover, preserve_launcher_metadata],
         )?;
         for installation in &game.installations {
             let profile = installation
@@ -304,8 +308,8 @@ impl Store {
             tx.execute(
                 "INSERT INTO installations(game_id,path,launcher,profile,available) VALUES(?1,?2,?3,?4,?5)
                  ON CONFLICT(game_id,path) DO UPDATE SET
-                 launcher=CASE WHEN excluded.launcher='unknown' AND installations.launcher<>'unknown' THEN installations.launcher ELSE excluded.launcher END,
-                 profile=CASE WHEN excluded.launcher='unknown' AND installations.launcher<>'unknown' THEN installations.profile ELSE COALESCE(excluded.profile,installations.profile) END, available=excluded.available",
+                 launcher=CASE WHEN (excluded.launcher='unknown' AND installations.launcher<>'unknown') OR (excluded.launcher='manual' AND installations.launcher NOT IN ('unknown','manual')) THEN installations.launcher ELSE excluded.launcher END,
+                 profile=CASE WHEN (excluded.launcher='unknown' AND installations.launcher<>'unknown') OR (excluded.launcher='manual' AND installations.launcher NOT IN ('unknown','manual')) THEN installations.profile ELSE COALESCE(excluded.profile,installations.profile) END, available=excluded.available",
                 params![game.id, installation.path.to_string_lossy(), launcher_name(&installation.launcher), profile, installation.available],
             )?;
         }
@@ -554,6 +558,55 @@ fn parse_launcher(value: &str) -> Launcher {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn manual_readdition_does_not_replace_an_official_launcher_profile() {
+        let temp = tempdir().unwrap();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        let profile = crate::model::LaunchProfile {
+            command: PathBuf::new(),
+            arguments: vec![],
+            working_directory: None,
+            launcher_command: Some("steam://rungameid/42".into()),
+        };
+        let official = Game::from_installation(
+            "Official title",
+            "Steam",
+            Installation {
+                path: temp.path().join("game"),
+                launcher: Launcher::Steam,
+                launch_profile: Some(profile.clone()),
+                available: false,
+            },
+        );
+        store.save_game(&official).unwrap();
+        let mut manual = Game::from_installation(
+            "run-game",
+            "Ajout manuel",
+            Installation {
+                path: temp.path().join("game"),
+                launcher: Launcher::Manual,
+                launch_profile: Some(crate::model::LaunchProfile {
+                    command: temp.path().join("game/run.exe"),
+                    arguments: vec![],
+                    working_directory: None,
+                    launcher_command: None,
+                }),
+                available: true,
+            },
+        );
+        store.save_manual_game(&mut manual).unwrap();
+        let games = store.games().unwrap();
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].title, "Official title");
+        assert_eq!(games[0].category, "Steam");
+        assert_eq!(games[0].installations[0].launcher, Launcher::Steam);
+        assert_eq!(
+            games[0].installations[0].launch_profile.as_ref(),
+            Some(&profile)
+        );
+        assert!(games[0].installations[0].available);
+    }
 
     #[test]
     fn manual_readdition_restores_an_ignored_game_atomically_and_keeps_corrections() {
