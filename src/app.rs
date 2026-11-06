@@ -140,7 +140,7 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
         }
         Theme::Prism => {
             visuals.panel_fill = Color32::from_rgba_unmultiplied(20, 29, 49, 235);
-            visuals.window_fill = Color32::from_rgba_unmultiplied(49, 65, 94, 220);
+            visuals.window_fill = Color32::from_rgba_unmultiplied(36, 48, 70, 250);
             visuals.widgets.noninteractive.bg_fill =
                 Color32::from_rgba_unmultiplied(66, 89, 125, 100);
             visuals.widgets.inactive.bg_fill = Color32::from_rgba_unmultiplied(90, 114, 153, 115);
@@ -150,8 +150,16 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
         }
     }
     visuals.widgets.active.fg_stroke.color = crate::style::text_on(visuals.widgets.active.bg_fill);
+    visuals.widgets.noninteractive.fg_stroke.color = theme_text(theme);
+    visuals.widgets.inactive.fg_stroke.color = theme_text(theme);
     visuals.selection.bg_fill = theme_accent(theme);
     visuals.selection.stroke.color = crate::style::text_on(theme_accent(theme));
+    // The selected application theme must not switch when the OS sends its theme.
+    ctx.set_theme(if visuals.dark_mode {
+        egui::Theme::Dark
+    } else {
+        egui::Theme::Light
+    });
     ctx.set_visuals(visuals);
     ctx.style_mut(|style| {
         style.spacing.item_spacing = egui::vec2(10.0, 10.0);
@@ -499,7 +507,7 @@ impl RustyShelfApp {
                                 ui.set_min_height(64.0);
                                 ui.horizontal(|ui| {
                                     if ui.button(tr(self.language, "Restaurer", "Restore")).clicked() { restore = Some(game.id.clone()); }
-                                    ui.add(egui::Label::new(RichText::new(&game.title).strong()).truncate()).on_hover_text(&game.title);
+                                    ui.add(egui::Label::new(RichText::new(&game.title).strong().color(self.foreground_color())).truncate()).on_hover_text(&game.title);
                                 });
                                 if let Some(installation) = game.installations.first() {
                                     let path = installation.path.display().to_string();
@@ -1052,7 +1060,12 @@ impl RustyShelfApp {
                 ui.add_space(16.0);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("▦").size(30.0).color(accent));
-                    ui.label(RichText::new("RustyShelf").size(21.0).strong());
+                    ui.label(
+                        RichText::new("RustyShelf")
+                            .size(21.0)
+                            .strong()
+                            .color(self.foreground_color()),
+                    );
                 });
                 ui.label(
                     RichText::new(tr(
@@ -1691,6 +1704,12 @@ impl RustyShelfApp {
         }
     }
 
+    fn foreground_color(&self) -> Color32 {
+        self.active_style()
+            .and_then(|style| style.text)
+            .unwrap_or(theme_text(self.theme))
+    }
+
     fn details_panel(&mut self, ui: &mut egui::Ui, games: &[Game]) {
         let Some(id) = self.selected_game.clone() else {
             ui.label(tr(
@@ -1708,7 +1727,12 @@ impl RustyShelfApp {
             ));
             return;
         };
-        ui.label(RichText::new(&game.title).size(21.0).strong());
+        ui.label(
+            RichText::new(&game.title)
+                .size(21.0)
+                .strong()
+                .color(self.foreground_color()),
+        );
         ui.collapsing(tr(self.language, "Modifier le nom", "Edit name"), |ui| {
             if self.title_edit_id.as_deref() != Some(&game.id) {
                 self.title_edit = game.title.clone();
@@ -1756,7 +1780,11 @@ impl RustyShelfApp {
         } else {
             &game.category
         };
-        ui.label(RichText::new(category).color(Color32::GRAY));
+        let muted = self
+            .active_style()
+            .and_then(|style| style.muted)
+            .unwrap_or(theme_muted_text(self.theme));
+        ui.label(RichText::new(category).color(muted));
         ui.add_space(10.0);
         if ui
             .button(tr(
@@ -1847,7 +1875,7 @@ impl RustyShelfApp {
         ui.label(
             RichText::new(tr(self.language, "INSTALLATIONS", "INSTALLATIONS"))
                 .size(11.0)
-                .color(Color32::GRAY),
+                .color(muted),
         );
         let mut launch_profile: Option<LaunchProfile> = None;
         let mut launch_uri: Option<String> = None;
@@ -2502,6 +2530,87 @@ impl eframe::App for RustyShelfApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chosen_theme_survives_system_theme_changes() {
+        for theme in [
+            Theme::Dark,
+            Theme::Light,
+            Theme::Breeze,
+            Theme::Horizon,
+            Theme::Classic,
+            Theme::Prism,
+        ] {
+            let ctx = egui::Context::default();
+            apply_theme(&ctx, theme);
+            let chosen_visuals = ctx.style().visuals.clone();
+            for system_theme in [egui::Theme::Light, egui::Theme::Dark] {
+                let _ = ctx.run(
+                    egui::RawInput {
+                        system_theme: Some(system_theme),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        assert_eq!(
+                            ctx.style().visuals.panel_fill,
+                            chosen_visuals.panel_fill,
+                            "{theme:?}"
+                        );
+                        assert_eq!(
+                            ctx.style().visuals.dark_mode,
+                            chosen_visuals.dark_mode,
+                            "{theme:?}"
+                        );
+                    },
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prominent_titles_use_text_color_instead_of_pressed_button_color() {
+        for theme in [Theme::Dark, Theme::Light, Theme::Prism] {
+            let ctx = egui::Context::default();
+            let mut app = test_app();
+            app.theme = theme;
+            app.css_enabled = false;
+            app.refresh_appearance(&ctx);
+            let title = app.games[0].title.clone();
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 900.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.sidebar(ctx);
+                    app.content(ctx);
+                },
+            );
+            let mut count = 0;
+            for shape in &output.shapes {
+                if let egui::epaint::Shape::Text(text) = &shape.shape {
+                    if text.galley.job.text == "RustyShelf" || text.galley.job.text == title {
+                        count += 1;
+                        for section in &text.galley.job.sections {
+                            assert_eq!(
+                                section.format.color,
+                                theme_text(theme),
+                                "{theme:?}: {}",
+                                text.galley.job.text
+                            );
+                        }
+                    }
+                }
+            }
+            assert!(
+                count >= 2,
+                "Both navigation and game title must be rendered"
+            );
+        }
+    }
 
     #[test]
     fn manual_addition_accepts_extensionless_files_and_reports_disappearing_files() {
