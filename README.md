@@ -78,4 +78,6 @@ Les dossiers de jeux nommés `Windows`, `dev`, `sys`, `proc` ou `temp` restent a
 
 La recherche accepte plusieurs mots dans n’importe quel ordre et ignore les accents latins courants : `etoile steam` retrouve par exemple un jeu « Étoile » de Steam. Une recherche vide évite de reconstruire les textes de recherche.
 
+La recherche couvre aussi les chemins d’installation : `D:` retrouve les jeux référencés sur ce disque, et `archives ete` peut retrouver un dossier `Archives/Été`, même déconnecté. Lorsque tu sélectionnes une source, le filtre de disponibilité considère uniquement ses installations : une copie Epic présente ne rend pas disponible une copie Steam absente.
+
 Les vignettes sont limitées à 32 Mo et 4096 × 4096 pixels à la lecture. Les échecs sont mis en cache pour éviter de relire constamment un fichier absent ou endommagé. Après reconnexion d’un disque ou modification d’une image, utiliser **Options → Recharger les vignettes locales**.
