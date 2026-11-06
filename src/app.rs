@@ -214,6 +214,8 @@ pub struct RustyShelfApp {
     cover_textures: HashMap<String, (PathBuf, Option<TextureHandle>)>,
     category_edit: String,
     category_edit_id: Option<String>,
+    title_edit: String,
+    title_edit_id: Option<String>,
     language: Language,
     theme: Theme,
     emulators: Vec<Emulator>,
@@ -338,6 +340,8 @@ impl RustyShelfApp {
             cover_textures: HashMap::new(),
             category_edit: String::new(),
             category_edit_id: None,
+            title_edit: String::new(),
+            title_edit_id: None,
             language,
             theme,
             emulators,
@@ -810,6 +814,14 @@ impl RustyShelfApp {
                         if let Err(error) = store.save_game(&game) {
                             self.diagnostics.error(error.to_string());
                             continue;
+                        }
+                        match store.custom_title(&game.id) {
+                            Ok(Some(title)) => game.title = title,
+                            Ok(None) => {}
+                            Err(error) => {
+                                self.diagnostics.error(error.to_string());
+                                continue;
+                            }
                         }
                     }
                     merge_game_in_memory(&mut self.games, game);
@@ -1671,6 +1683,46 @@ impl RustyShelfApp {
             return;
         };
         ui.label(RichText::new(&game.title).size(21.0).strong());
+        ui.collapsing(tr(self.language, "Modifier le nom", "Edit name"), |ui| {
+            if self.title_edit_id.as_deref() != Some(&game.id) {
+                self.title_edit = game.title.clone();
+                self.title_edit_id = Some(game.id.clone());
+            }
+            ui.add(
+                egui::TextEdit::singleline(&mut self.title_edit)
+                    .desired_width(ui.available_width()),
+            );
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add_enabled(
+                        !self.title_edit.trim().is_empty(),
+                        egui::Button::new(tr(self.language, "Enregistrer le nom", "Save name")),
+                    )
+                    .clicked()
+                {
+                    let title = self.title_edit.trim().to_owned();
+                    if self.update_library(|store| store.set_title(&game.id, &title)) {
+                        self.title_edit = title;
+                    }
+                }
+                if ui
+                    .button(tr(
+                        self.language,
+                        "Rétablir le nom détecté",
+                        "Restore detected name",
+                    ))
+                    .clicked()
+                    && self.update_library(|store| store.reset_title(&game.id))
+                {
+                    self.title_edit_id = None;
+                }
+            });
+            ui.small(tr(
+                self.language,
+                "Ce nom reste conservé après les scans. Les fichiers ne sont pas renommés.",
+                "This name survives scans. Files are not renamed.",
+            ));
+        });
         let category = if let Some(console) = self.game_console(&game) {
             console
         } else if game.category == "À confirmer" {
@@ -2425,6 +2477,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn scan_updates_keep_custom_titles_visible_before_completion() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = test_app();
+        let mut candidate = app.games[0].clone();
+        candidate.confirmed = false;
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        store.save_game(&candidate).unwrap();
+        store
+            .set_title(&candidate.id, "Mon nom personnalisé")
+            .unwrap();
+        app.games = store.games().unwrap();
+        app.store = Some(store);
+        candidate.confirmed = true;
+        let (sender, receiver) = mpsc::sync_channel(4);
+        app.scan_receiver = Some(receiver);
+        app.scan_control = Some(ScanControl::default());
+        sender.send(ScanEvent::Candidate(candidate)).unwrap();
+        app.poll_scan(&egui::Context::default());
+        assert_eq!(app.games[0].title, "Mon nom personnalisé");
+        assert!(app.games[0].confirmed);
+        sender
+            .send(ScanEvent::Finished {
+                visited: 1,
+                cancelled: true,
+            })
+            .unwrap();
+        app.poll_scan(&egui::Context::default());
+        assert_eq!(app.games[0].title, "Mon nom personnalisé");
+    }
+
+    #[test]
     fn failed_css_changes_preserve_the_saved_and_visible_style() {
         let temp = tempfile::tempdir().unwrap();
         let database = temp.path().join("library.db");
@@ -2570,6 +2653,8 @@ mod tests {
             category_edit: String::new(),
             category_edit_id: None,
             language: Language::French,
+            title_edit: String::new(),
+            title_edit_id: None,
             theme: Theme::Dark,
             emulators: vec![],
             css_path: None,

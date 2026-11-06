@@ -44,6 +44,7 @@ impl Store {
              CREATE TABLE IF NOT EXISTS excluded_paths (path TEXT PRIMARY KEY);
              CREATE TABLE IF NOT EXISTS ignored_games (game_id TEXT PRIMARY KEY);
              CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS title_overrides (game_id TEXT PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE, title TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS emulators (id TEXT PRIMARY KEY, name TEXT NOT NULL, executable TEXT NOT NULL UNIQUE);
              CREATE TABLE IF NOT EXISTS game_emulators (game_id TEXT PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE, emulator_id TEXT NOT NULL REFERENCES emulators(id) ON DELETE CASCADE);
              CREATE TABLE IF NOT EXISTS categories (name TEXT PRIMARY KEY);",
@@ -82,6 +83,7 @@ impl Store {
                     continue;
                 }
                 tx.execute("INSERT OR IGNORE INTO games(id,title,category,favorite,confirmed,cover_path,category_custom) SELECT ?1,title,category,favorite,confirmed,cover_path,category_custom FROM games WHERE id=?2", params![id, game.id])?;
+                tx.execute("INSERT OR IGNORE INTO title_overrides(game_id,title) SELECT ?1,title FROM title_overrides WHERE game_id=?2", params![id, game.id])?;
                 tx.execute("INSERT OR IGNORE INTO installations(game_id,path,launcher,profile,available) SELECT ?1,path,launcher,profile,available FROM installations WHERE game_id=?2 AND path=?3", params![id, game.id, installation.path.to_string_lossy()])?;
                 tx.execute(
                     "DELETE FROM installations WHERE game_id=?1 AND path=?2",
@@ -161,6 +163,7 @@ impl Store {
                 params![new_id, old_id],
             )?;
             tx.execute("INSERT OR IGNORE INTO game_emulators(game_id,emulator_id) SELECT ?1,emulator_id FROM game_emulators WHERE game_id=?2", params![new_id, old_id])?;
+            tx.execute("INSERT OR IGNORE INTO title_overrides(game_id,title) SELECT ?1,title FROM title_overrides WHERE game_id=?2", params![new_id, old_id])?;
             tx.execute("INSERT OR IGNORE INTO ignored_games(game_id) SELECT ?1 FROM ignored_games WHERE game_id=?2", params![new_id, old_id])?;
             if let Some(console) = overrides.remove(&old_id) {
                 // A correction already attached to the surviving record wins.
@@ -308,11 +311,12 @@ impl Store {
         // One ordered join replaces one query per game. LEFT JOIN retains games
         // without an installation (for example after importing an older library).
         let mut statement = self.connection.prepare(
-            "SELECT g.id,g.title,g.category,g.favorite,g.confirmed,g.cover_path,
+            "SELECT g.id,COALESCE(t.title,g.title),g.category,g.favorite,g.confirmed,g.cover_path,
                     i.path,i.launcher,i.profile,i.available
              FROM games g LEFT JOIN installations i ON i.game_id=g.id
+             LEFT JOIN title_overrides t ON t.game_id=g.id
              WHERE EXISTS (SELECT 1 FROM ignored_games WHERE game_id=g.id)=?1
-             ORDER BY g.title COLLATE NOCASE,g.id,i.path",
+             ORDER BY COALESCE(t.title,g.title) COLLATE NOCASE,g.id,i.path",
         )?;
         let mut rows = statement.query([ignored])?;
         let mut games: Vec<Game> = Vec::new();
@@ -349,6 +353,36 @@ impl Store {
             "UPDATE games SET favorite=?2 WHERE id=?1",
             params![id, favorite],
         )?;
+        Ok(())
+    }
+
+    pub fn custom_title(&self, id: &str) -> rusqlite::Result<Option<String>> {
+        self.connection
+            .query_row(
+                "SELECT title FROM title_overrides WHERE game_id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
+    pub fn set_title(&self, id: &str, title: &str) -> rusqlite::Result<()> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Le nom du jeu ne peut pas être vide.",
+                ),
+            )));
+        }
+        self.connection.execute("INSERT INTO title_overrides(game_id,title) VALUES(?1,?2) ON CONFLICT(game_id) DO UPDATE SET title=excluded.title", params![id, title])?;
+        Ok(())
+    }
+
+    pub fn reset_title(&self, id: &str) -> rusqlite::Result<()> {
+        self.connection
+            .execute("DELETE FROM title_overrides WHERE game_id=?1", [id])?;
         Ok(())
     }
 
@@ -506,6 +540,82 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn custom_titles_survive_scan_reopen_and_can_restore_the_detected_name() {
+        let temp = tempdir().unwrap();
+        let database = temp.path().join("library.db");
+        let game = Game::from_installation(
+            "raw-file-name",
+            "ROM",
+            Installation {
+                path: temp.path().join("game.iso"),
+                launcher: Launcher::Unknown,
+                launch_profile: None,
+                available: false,
+            },
+        );
+        {
+            let store = Store::open(&database).unwrap();
+            store.save_game(&game).unwrap();
+            store.set_title(&game.id, "  L’Étoile  ").unwrap();
+            store.set_favorite(&game.id, true).unwrap();
+            store.save_game(&game).unwrap();
+            assert_eq!(store.games().unwrap()[0].title, "L’Étoile");
+            assert!(store.set_title(&game.id, " \n\t ").is_err());
+            assert_eq!(store.games().unwrap()[0].title, "L’Étoile");
+        }
+        let store = Store::open(&database).unwrap();
+        let loaded = store.games().unwrap().remove(0);
+        assert_eq!(loaded.id, game.id);
+        assert_eq!(loaded.title, "L’Étoile");
+        assert!(loaded.favorite);
+        store.reset_title(&game.id).unwrap();
+        assert_eq!(store.games().unwrap()[0].title, "raw-file-name");
+    }
+
+    #[test]
+    fn adding_custom_title_storage_preserves_old_libraries_and_distinct_games() {
+        let temp = tempdir().unwrap();
+        let database = temp.path().join("library.db");
+        {
+            let store = Store::open(&database).unwrap();
+            for name in ["First", "Second"] {
+                store
+                    .save_game(&Game::from_installation(
+                        name,
+                        "Steam",
+                        Installation {
+                            path: temp.path().join(name),
+                            launcher: Launcher::Steam,
+                            launch_profile: None,
+                            available: true,
+                        },
+                    ))
+                    .unwrap();
+            }
+            store
+                .connection
+                .execute_batch("DROP TABLE title_overrides;")
+                .unwrap();
+        }
+        let store = Store::open(&database).unwrap();
+        let games = store.games().unwrap();
+        assert_eq!(games.len(), 2);
+        for game in &games {
+            store.set_title(&game.id, "Identical display name").unwrap();
+        }
+        drop(store);
+        let store = Store::open(&database).unwrap();
+        let loaded = store.games().unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert!(loaded
+            .iter()
+            .all(|game| game.title == "Identical display name"));
+        assert!(games
+            .iter()
+            .all(|game| loaded.iter().any(|other| other.id == game.id)));
+    }
+
+    #[test]
     fn migrating_legacy_ids_preserves_console_overrides_and_ignored_state() {
         let temp = tempdir().unwrap();
         let database = temp.path().join("library.db");
@@ -526,6 +636,7 @@ mod tests {
             store.save_game(&game).unwrap();
             store.set_favorite(&game.id, true).unwrap();
             store.ignore_game(&game.id).unwrap();
+            store.set_title(&game.id, "Mon ancienne aventure").unwrap();
             store
                 .set_preference(
                     "console_overrides",
@@ -539,6 +650,7 @@ mod tests {
             let ignored = store.ignored_games().unwrap();
             assert_eq!(ignored.len(), 1);
             assert_eq!(ignored[0].id, new_id);
+            assert_eq!(ignored[0].title, "Mon ancienne aventure");
             assert!(ignored[0].favorite);
             let overrides: std::collections::HashMap<String, String> =
                 serde_json::from_str(&store.preference("console_overrides").unwrap().unwrap())
