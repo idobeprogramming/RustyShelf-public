@@ -186,6 +186,14 @@ impl Store {
         Ok(())
     }
 
+    pub fn set_preferences(&self, values: &[(&str, &str)]) -> rusqlite::Result<()> {
+        let tx = self.connection.unchecked_transaction()?;
+        for (key, value) in values {
+            tx.execute("INSERT INTO preferences(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key, value])?;
+        }
+        tx.commit()
+    }
+
     pub fn save_emulator(&self, emulator: &crate::model::Emulator) -> rusqlite::Result<()> {
         self.connection.execute(
             "INSERT INTO emulators(id,name,executable) VALUES(?1,?2,?3) ON CONFLICT(executable) DO UPDATE SET name=excluded.name",

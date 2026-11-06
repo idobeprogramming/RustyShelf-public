@@ -585,26 +585,48 @@ impl RustyShelfApp {
         }
     }
 
-    fn load_css(&mut self, ctx: &egui::Context) {
-        let Some(path) = self.css_path.as_deref() else {
-            return;
-        };
-        match CustomStyle::load(path) {
+    fn load_css(&mut self, ctx: &egui::Context, path: PathBuf) {
+        match CustomStyle::load(&path) {
             Ok(style) => {
+                if !self.persist(|store| {
+                    store.set_preferences(&[
+                        ("css_path", &path.to_string_lossy()),
+                        ("css_enabled", "true"),
+                    ])
+                }) {
+                    self.css_error = Some(self.status.clone());
+                    return;
+                }
+                self.css_path = Some(path);
                 self.custom_style = Some(style);
                 self.css_enabled = true;
                 self.css_error = None;
-                if let Some(store) = &self.store {
-                    if let Err(error) = store
-                        .set_preference("css_path", &path.to_string_lossy())
-                        .and_then(|_| store.set_preference("css_enabled", "true"))
-                    {
-                        self.css_error = Some(error.to_string());
-                    }
-                }
                 self.refresh_appearance(ctx);
             }
             Err(error) => self.css_error = Some(error),
+        }
+    }
+
+    fn set_css_enabled(&mut self, ctx: &egui::Context, enabled: bool) {
+        if enabled {
+            if let Some(path) = self.css_path.clone() {
+                self.load_css(ctx, path);
+            } else {
+                self.css_error = Some(
+                    tr(
+                        self.language,
+                        "Choisis d’abord un fichier CSS.",
+                        "Choose a CSS file first.",
+                    )
+                    .into(),
+                );
+            }
+        } else if self.persist(|store| store.set_preference("css_enabled", "false")) {
+            self.css_enabled = false;
+            self.css_error = None;
+            self.refresh_appearance(ctx);
+        } else {
+            self.css_error = Some(self.status.clone());
         }
     }
 
@@ -1983,25 +2005,24 @@ impl RustyShelfApp {
                 ui.horizontal_wrapped(|ui| {
                     if ui.button(tr(self.language, "Importer un fichier CSS…", "Import CSS file…")).clicked() {
                         if let Some(path) = rfd::FileDialog::new().add_filter("CSS", &["css"]).pick_file() {
-                            self.css_path = Some(path);
-                            self.load_css(ctx);
+                            self.load_css(ctx, path);
                         }
                     }
-                    if ui.add_enabled(self.css_path.is_some(), egui::Button::new(tr(self.language, "Recharger", "Reload"))).clicked() { self.load_css(ctx); }
+                    if ui.add_enabled(self.css_path.is_some(), egui::Button::new(tr(self.language, "Recharger", "Reload"))).clicked() {
+                        if let Some(path) = self.css_path.clone() { self.load_css(ctx, path); }
+                    }
                     if ui.button(tr(self.language, "Enregistrer le modèle…", "Save template…")).clicked() {
                         if let Some(path) = rfd::FileDialog::new().set_file_name("rustyshelf.css").add_filter("CSS", &["css"]).save_file() {
                             match std::fs::write(&path, crate::style::EXAMPLE) {
-                                Ok(()) => { self.css_path = Some(path); self.load_css(ctx); }
+                                Ok(()) => self.load_css(ctx, path),
                                 Err(error) => self.css_error = Some(error.to_string()),
                             }
                         }
                     }
                 });
-                if ui.checkbox(&mut self.css_enabled, tr(self.language, "Activer le style CSS", "Enable CSS style")).changed() {
-                    if self.css_enabled && self.custom_style.is_none() { self.load_css(ctx); }
-                    self.refresh_appearance(ctx);
-                    let key = if self.css_enabled { "true" } else { "false" };
-                    self.persist(|store| store.set_preference("css_enabled", key));
+                let mut css_enabled = self.css_enabled;
+                if ui.checkbox(&mut css_enabled, tr(self.language, "Activer le style CSS", "Enable CSS style")).changed() {
+                    self.set_css_enabled(ctx, css_enabled);
                 }
                 if let Some(path) = &self.css_path { ui.label(path.display().to_string()); }
                 if let Some(error) = &self.css_error { ui.colored_label(Color32::from_rgb(225, 92, 85), error); }
@@ -2417,6 +2438,66 @@ impl eframe::App for RustyShelfApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_css_changes_preserve_the_saved_and_visible_style() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = temp.path().join("library.db");
+        let old_path = temp.path().join("old.css");
+        let new_path = temp.path().join("new.css");
+        std::fs::write(&old_path, ":root { --accent: #123456; }").unwrap();
+        std::fs::write(&new_path, ":root { --accent: #abcdef; }").unwrap();
+        let mut app = test_app();
+        app.store = Some(Store::open(&database).unwrap());
+        let ctx = egui::Context::default();
+        app.load_css(&ctx, old_path.clone());
+        assert!(app.css_error.is_none());
+        assert_eq!(app.css_path.as_ref(), Some(&old_path));
+        let accent = app.custom_style.as_ref().unwrap().accent;
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        // The path write succeeds first; the enabled write then fails.
+        connection.execute_batch("CREATE TRIGGER reject_css BEFORE INSERT ON preferences WHEN NEW.key='css_enabled' BEGIN SELECT RAISE(ABORT,'refus CSS'); END;").unwrap();
+        app.load_css(&ctx, new_path);
+        assert!(app.css_error.is_some());
+        assert_eq!(app.css_path.as_ref(), Some(&old_path));
+        assert_eq!(app.custom_style.as_ref().unwrap().accent, accent);
+        assert_eq!(
+            app.store.as_ref().unwrap().preference("css_path").unwrap(),
+            Some(old_path.to_string_lossy().into_owned())
+        );
+        app.set_css_enabled(&ctx, false);
+        assert!(app.css_enabled);
+        assert!(app.css_error.is_some());
+        connection
+            .execute_batch("DROP TRIGGER reject_css;")
+            .unwrap();
+        app.set_css_enabled(&ctx, false);
+        assert!(!app.css_enabled);
+        // An invalid reload must not reactivate a disabled style.
+        std::fs::write(&old_path, "broken CSS").unwrap();
+        app.set_css_enabled(&ctx, true);
+        assert!(!app.css_enabled);
+        assert!(app.css_error.is_some());
+        assert_eq!(
+            app.store
+                .as_ref()
+                .unwrap()
+                .preference("css_enabled")
+                .unwrap()
+                .as_deref(),
+            Some("false")
+        );
+    }
+
+    #[test]
+    fn css_cannot_be_enabled_without_a_file() {
+        let mut app = test_app();
+        app.css_enabled = false;
+        app.css_path = None;
+        app.set_css_enabled(&egui::Context::default(), true);
+        assert!(!app.css_enabled);
+        assert!(app.css_error.as_deref().unwrap().contains("CSS"));
+    }
 
     #[test]
     fn distinct_titles_are_not_merged_by_removing_spaces_and_punctuation() {
