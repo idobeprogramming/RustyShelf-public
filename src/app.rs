@@ -1904,7 +1904,7 @@ impl RustyShelfApp {
                 } else {
                     &installation.path
                 };
-                if let Err(error) = open::that(folder) {
+                if let Err(error) = open::that_detached(folder) {
                     self.status = error.to_string();
                 }
             }
@@ -2393,24 +2393,9 @@ fn same_path(left: &std::path::Path, right: &std::path::Path) -> bool {
 }
 
 fn launch_uri_handler(uri: &str) -> std::io::Result<()> {
-    if uri.starts_with("lutris:") {
-        Command::new("lutris").arg(uri).spawn().map(|_| ())
-    } else if uri.starts_with("heroic://") {
-        #[cfg(target_os = "linux")]
-        {
-            Command::new("heroic")
-                .arg(uri)
-                .arg("--no-gui")
-                .spawn()
-                .map(|_| ())
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            open::that(uri)
-        }
-    } else {
-        open::that(uri)
-    }
+    // Let the desktop resolve native/Flatpak/AppImage registrations. A launcher
+    // may stay open for the entire game, so never wait for its lifetime here.
+    open::that_detached(uri)
 }
 
 impl Drop for RustyShelfApp {
