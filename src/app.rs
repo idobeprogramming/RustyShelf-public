@@ -2633,7 +2633,18 @@ mod tests {
         app.selected_category = "Steam".into();
         assert!(app.matches_category(&app.games[0]));
         app.selected_category = "ROMs".into();
-        for width in [780.0, 1280.0] {
+        for (width, review) in [
+            (780.0, false),
+            (1280.0, false),
+            (780.0, true),
+            (1280.0, true),
+        ] {
+            if review {
+                app.selected_category = "À confirmer".into();
+                for game in &mut app.games {
+                    game.confirmed = false;
+                }
+            }
             let output = ctx.run(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
