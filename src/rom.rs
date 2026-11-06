@@ -34,19 +34,22 @@ pub fn game_console(game: &Game) -> Option<&'static str> {
         .iter()
         .find_map(|installation| {
             // The ROM identity is assigned only after classification. Preserve
-            // accepted .md cartridges without rereading their header every frame
+            // accepted ambiguous cartridges without rereading their header every frame
             // or relying on a category the user may have renamed.
-            if game.id.starts_with("rom-")
-                && !game.id.starts_with("rom-image-")
-                && installation
+            if game.id.starts_with("rom-") && !game.id.starts_with("rom-image-") {
+                let extension = installation
                     .path
                     .extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
-            {
-                Some("Mega Drive")
-            } else {
-                console(&installation.path)
+                    .and_then(|extension| extension.to_str())
+                    .unwrap_or("");
+                if extension.eq_ignore_ascii_case("md") {
+                    return Some("Mega Drive");
+                }
+                if extension.eq_ignore_ascii_case("3ds") {
+                    return Some("Nintendo 3DS");
+                }
             }
+            console(&installation.path)
         })
         .or_else(|| {
             game.category.strip_prefix("ROM · ").and_then(|category| {
@@ -67,16 +70,7 @@ pub fn console(path: &Path) -> Option<&'static str> {
         "gbc" => "Game Boy Color",
         "gba" => "Game Boy Advance",
         "nds" => "Nintendo DS",
-        "3ds"
-            if path.ancestors().skip(1).any(|folder| {
-                folder.file_name().is_some_and(|name| {
-                    ["roms", "3ds", "nintendo 3ds"]
-                        .contains(&name.to_string_lossy().to_ascii_lowercase().as_str())
-                })
-            }) =>
-        {
-            "Nintendo 3DS"
-        }
+        "3ds" if has_ncsd_header(path) => "Nintendo 3DS",
         "cci" => "Nintendo 3DS",
         "n64" | "z64" | "v64" => "Nintendo 64",
         "gen" | "smd" => "Mega Drive",
@@ -91,6 +85,16 @@ pub fn console(path: &Path) -> Option<&'static str> {
 
 fn has_sega_header(path: &Path) -> bool {
     has_signature(path, 0x100, b"SEGA")
+}
+
+fn has_ncsd_header(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    // NCSD has a 512-byte header, with its magic after the RSA signature.
+    let mut header = [0u8; 0x200];
+    file.read_exact(&mut header).is_ok() && &header[0x100..0x104] == b"NCSD"
 }
 
 fn has_signature(path: &Path, offset: u64, expected: &[u8]) -> bool {
@@ -132,6 +136,7 @@ pub fn scan_candidate(path: &Path) -> bool {
         return false;
     };
     match extension.to_ascii_lowercase().as_str() {
+        "3ds" | "cci" => has_ncsd_header(path),
         "nes" => has_cartridge_header(path, false),
         "n64" | "z64" | "v64" => has_cartridge_header(path, true),
         "gen" | "md" => has_sega_header(path),
@@ -191,6 +196,45 @@ pub fn assignable_console(console: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nintendo_3ds_detection_uses_the_container_not_the_folder_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let roms = temp.path().join("roms");
+        std::fs::create_dir(&roms).unwrap();
+        for folder in [temp.path(), roms.as_path()] {
+            for extension in ["3DS", "cci"] {
+                let path = folder.join(format!("Étoiles.{extension}"));
+                assert!(!scan_candidate(&path));
+                for bytes in [b"3D model".to_vec(), {
+                    let mut truncated = vec![0; 0x104];
+                    truncated[0x100..].copy_from_slice(b"NCSD");
+                    truncated
+                }] {
+                    std::fs::write(&path, bytes).unwrap();
+                    assert!(!scan_candidate(&path), "{}", path.display());
+                }
+                let mut header = [0u8; 0x200];
+                header[0x100..0x104].copy_from_slice(b"NCSD");
+                std::fs::write(&path, header).unwrap();
+                assert!(scan_candidate(&path));
+                assert_eq!(console(&path), Some("Nintendo 3DS"));
+                let mut game = Game::from_installation(
+                    "Étoiles",
+                    "Ajout manuel",
+                    crate::model::Installation {
+                        path: path.clone(),
+                        launcher: crate::model::Launcher::Manual,
+                        launch_profile: None,
+                        available: true,
+                    },
+                );
+                game.category = "Aventures".into();
+                std::fs::remove_file(&path).unwrap();
+                assert_eq!(game_console(&game), Some("Nintendo 3DS"));
+            }
+        }
+    }
 
     #[test]
     fn accepted_md_rom_keeps_its_console_with_custom_category_and_offline_disk() {

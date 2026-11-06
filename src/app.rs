@@ -2613,6 +2613,23 @@ mod tests {
     }
 
     #[test]
+    fn manual_3ds_addition_uses_an_emulator_profile_even_outside_rom_folders() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("Étoiles.3ds");
+        let mut header = [0u8; 0x200];
+        header[0x100..0x104].copy_from_slice(b"NCSD");
+        std::fs::write(&path, header).unwrap();
+        let mut app = test_app();
+        app.store = Some(Store::open(temp.path().join("library.db")).unwrap());
+        app.add_manual_path(path.clone());
+        assert_eq!(app.games.len(), 1);
+        assert_eq!(app.game_console(&app.games[0]), Some("Nintendo 3DS"));
+        assert_eq!(app.games[0].installations[0].path, path);
+        assert!(app.games[0].confirmed);
+        assert!(app.games[0].installations[0].launch_profile.is_none());
+    }
+
+    #[test]
     fn manual_addition_accepts_extensionless_files_and_reports_disappearing_files() {
         let temp = tempfile::tempdir().unwrap();
         let executable = temp.path().join("run-game");

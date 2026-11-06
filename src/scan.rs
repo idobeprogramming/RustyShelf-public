@@ -728,6 +728,35 @@ mod tests {
     }
 
     #[test]
+    fn finds_3ds_images_outside_rom_folders_and_rejects_models_inside_them() {
+        let temp = tempdir().unwrap();
+        let roms = temp.path().join("roms");
+        fs::create_dir(&roms).unwrap();
+        fs::write(roms.join("Scene.3ds"), b"3D geometry").unwrap();
+        fs::write(roms.join("Data.cci"), b"ordinary data").unwrap();
+        let path = temp.path().join("Étoiles.3ds");
+        let mut header = [0u8; 0x200];
+        header[0x100..0x104].copy_from_slice(b"NCSD");
+        fs::write(&path, header).unwrap();
+        let mut games = Vec::new();
+        scan_roots(
+            &[temp.path().to_owned()],
+            &[],
+            &ScanControl::default(),
+            |event| {
+                if let ScanEvent::Candidate(game) = event {
+                    games.push(game);
+                }
+            },
+        );
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].installations[0].path, path);
+        assert_eq!(crate::rom::game_console(&games[0]), Some("Nintendo 3DS"));
+        assert!(!games[0].confirmed);
+        assert!(games[0].installations[0].launch_profile.is_none());
+    }
+
+    #[test]
     fn linux_removable_volumes_remain_scannable_without_entering_runtime_dirs() {
         for path in [
             "/run",
