@@ -68,5 +68,6 @@ Une tâche à la fois : comprendre, modifier, vérifier les critères, puis cré
 62. [x] Utiliser les associations système pour Heroic/Lutris et ne pas attendre la fermeture des lanceurs.
 63. [x] Renommer un jeu sans écraser son nom détecté ni perdre ce choix après un scan.
 64. [x] Distribuer un exécutable Windows graphique sans console supplémentaire.
+65. [x] Ajouter Ctrl+F pour rechercher et Échap pour fermer les fenêtres secondaires.
 
 Critères : formatage, tests concernés, `cargo test`, Clippy sans avertissement. Chaque lot autonome produit un commit séparé. Le pipeline CI exécute ces contrôles et construit les deux paquets à chaque push ou pull request.

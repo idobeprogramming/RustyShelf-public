@@ -149,3 +149,5 @@ Validation : **85 tests**, formatage et Clippy passent. L’échec `.md` a été
 - L’exécutable Windows optimisé utilise le sous-système graphique ; les versions de développement conservent la console. Le sous-système est vérifié dans l’en-tête du binaire de distribution, sans lancer de jeu.
 
 Validation : **88 tests**, formatage et Clippy passent sous Windows. Le renommage ne touche aucun fichier de jeu. La validation graphique native Windows/CachyOS reste distincte des tests de rendu egui existants.
+
+Les raccourcis `Ctrl+F` et `Échap` complètent ce lot. Un test envoie de vrais événements clavier egui, vérifie que la recherche ne prend pas le focus derrière les options, ferme les fenêtres secondaires, puis saisit du texte dans le champ de recherche focalisé. **89 tests passent**, ainsi que le formatage et Clippy. Le mode `WindowsGui` a été lu dans l’en-tête PE de l’exécutable optimisé.
