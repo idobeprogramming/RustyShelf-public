@@ -83,9 +83,14 @@ fn normalize_search(text: &str) -> String {
 
 impl Filters {
     pub fn matches(&self, game: &Game, query: &SearchQuery, console: Option<&str>) -> bool {
-        let available = game
-            .installations
-            .iter()
+        let matching_installations = game.installations.iter().filter(|installation| {
+            self.source
+                .as_ref()
+                .is_none_or(|source| &installation.launcher == source)
+        });
+        let has_source = self.source.is_none() || matching_installations.clone().next().is_some();
+        let available = matching_installations
+            .into_iter()
             .any(|installation| installation.available);
         query.matches(game, console)
             && match self.kind {
@@ -95,11 +100,7 @@ impl Filters {
             }
             && (!self.favorites_only || game.favorite)
             && self.available.is_none_or(|expected| available == expected)
-            && self.source.as_ref().is_none_or(|source| {
-                game.installations
-                    .iter()
-                    .any(|installation| &installation.launcher == source)
-            })
+            && has_source
     }
 }
 
@@ -107,6 +108,47 @@ impl Filters {
 mod tests {
     use super::*;
     use crate::model::Installation;
+
+    #[test]
+    fn availability_is_evaluated_for_the_selected_launcher() {
+        let mut game = Game::from_installation(
+            "Game",
+            "Steam",
+            Installation {
+                path: "/offline/game".into(),
+                launcher: Launcher::Steam,
+                launch_profile: None,
+                available: false,
+            },
+        );
+        game.installations.push(Installation {
+            path: "/online/game".into(),
+            launcher: Launcher::Epic,
+            launch_profile: None,
+            available: true,
+        });
+        let query = SearchQuery::new("");
+        let mut filters = Filters {
+            source: Some(Launcher::Steam),
+            available: Some(true),
+            ..Default::default()
+        };
+        assert!(!filters.matches(&game, &query, None));
+        filters.available = Some(false);
+        assert!(filters.matches(&game, &query, None));
+        filters.source = Some(Launcher::Gog);
+        assert!(!filters.matches(&game, &query, None));
+        filters.source = None;
+        assert!(!filters.matches(&game, &query, None));
+        filters.available = Some(true);
+        assert!(filters.matches(&game, &query, None));
+        // A second available Steam installation makes that source available.
+        game.installations[1].launcher = Launcher::Steam;
+        filters.source = Some(Launcher::Steam);
+        assert!(filters.matches(&game, &query, None));
+        filters.available = Some(false);
+        assert!(!filters.matches(&game, &query, None));
+    }
 
     #[test]
     fn multiword_search_ignores_accents_and_combines_title_console_and_source() {
