@@ -57,5 +57,8 @@ Une tâche à la fois : comprendre, modifier, vérifier les critères, puis cré
 51. [x] Lire toutes les bibliothèques Steam dans les listes compactes et signaler les erreurs.
 52. [x] Ne plus masquer les jeux dont les dossiers portent un nom système et permettre les scans Linux ciblés.
 53. [x] Vérifier l’annulation entre les entrées exclues et conserver les proportions des jaquettes.
+54. [x] Garder distincts les titres qui ne diffèrent que par espaces ou ponctuation.
+55. [x] Appliquer le style CSS uniquement après sauvegarde atomique et conserver le style précédent en cas d’erreur.
+56. [x] Transférer les corrections de console lors des migrations d’identifiants anciens.
 
 Critères : formatage, tests concernés, `cargo test`, Clippy sans avertissement. Chaque lot autonome produit un commit séparé. Le pipeline CI exécute ces contrôles et construit les deux paquets à chaque push ou pull request.

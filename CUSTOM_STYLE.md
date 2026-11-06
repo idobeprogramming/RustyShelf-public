@@ -29,3 +29,5 @@ RustyShelf utilise une interface native egui. Le format accepte un bloc de varia
 | `--gap` | Espacement, de 4 à 24 px |
 
 Les couleurs acceptent `#RGB`, `#RRGGBB` et `#RRGGBBAA`. Les commentaires `/* … */` sont permis. Les variables omises conservent les valeurs du thème. Une variable inconnue ou une valeur invalide affiche une erreur et conserve le dernier style chargé pendant la session. Au redémarrage, un fichier illisible ou invalide laisse le thème intégré actif. La taille maximale du fichier est de 64 Ko.
+
+L’import enregistre le chemin et l’activation ensemble avant de modifier l’apparence. En cas d’échec d’enregistrement, le style et le chemin précédents sont conservés. Activer le CSS demande un fichier valide ; un rechargement invalide ne réactive pas un style désactivé.
