@@ -105,3 +105,12 @@ Validation : 65 tests, formatage et Clippy passent. Aucune dépendance ajoutée.
 - Le rapport persistant conserve les racines choisies, le nombre d’éléments parcourus et l’issue terminé/interrompu. Les anciens rapports restent lisibles sans inventer leur état final.
 
 Validation : **71 tests passent**, formatage et Clippy passent. Les tests ajoutés utilisent uniquement des fichiers et bases temporaires ; aucun jeu n’est lancé. Aucune dépendance ajoutée. Le disque X: produit toujours un avertissement de cache de compilation lié aux liens physiques, sans échec de compilation. Les catalogues réels complets et la validation graphique CachyOS restent à vérifier.
+
+## Dossiers manquants et présentation des jaquettes
+
+- La liste d’exclusion par nom cachait les dossiers `Windows`, `dev`, `proc`, `sys` et `temp` dans les collections. Ils sont désormais parcourus. Le dossier Windows indiqué par `SystemRoot` reste exclu ; un test le distingue d’un dossier de jeu nommé Windows.
+- Sous Linux, la protection des arbres système s’applique aux scans généraux. Une racine explicitement choisie dans un de ces arbres reste parcourable, notamment les imports dans `/tmp` et les installations dans `/var/lib`. Cela corrige aussi l’exclusion systématique des répertoires temporaires utilisés par les tests Linux. Les exclusions utilisateur restent prioritaires et les liens ne sont pas suivis.
+- Le parcours teste l’annulation entre les entrées, y compris celles qui seront exclues, au lieu de laisser le filtre interne les consommer avant de rendre la main. Une lecture système déjà engagée reste non interruptible.
+- Les jaquettes sont centrées dans leur emplacement et gardent leur rapport largeur/hauteur ; les portraits ne sont plus étirés en paysage. L’état d’une installation absente ne prétend plus que son disque entier est indisponible.
+
+Validation : **74 tests**, formatage et Clippy passent sous Windows. Trois tests supplémentaires couvrent les noms de dossiers, la protection du vrai dossier Windows et les règles de chemins Linux. Les règles Linux sont testables sous Windows ; cela ne constitue pas une exécution native Linux. WSL a refusé l’accès à sa liste de distributions dans cette session. La validation CachyOS et le contrôle visuel natif restent à effectuer. Aucun jeu réel lancé, aucune nouvelle dépendance.

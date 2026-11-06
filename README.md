@@ -74,6 +74,8 @@ La découverte vérifie les en-têtes NES et Nintendo 64 ; les trois ordres d’
 
 Le scan évite de parcourir deux fois des racines imbriquées. L’annulation est vérifiée entre les fichiers, y compris pendant la découverte des lanceurs ; une lecture système en cours doit toutefois se terminer. Les manifestes lus sont limités à 4 Mo et leurs erreurs sont intégrées au rapport. Les profils Lutris sans exécutable local résolu sont signalés comme non analysés.
 
+Les dossiers de jeux nommés `Windows`, `dev`, `sys`, `proc` ou `temp` restent analysés : leur nom seul ne suffit plus à les exclure. Le vrai dossier système Windows reste protégé. Sous Linux, un scan général écarte les arbres système, mais un dossier explicitement choisi dans `/tmp` ou `/var/lib` peut être analysé. Les exclusions ajoutées dans les options restent prioritaires. Les jaquettes de la galerie conservent leurs proportions, en portrait comme en paysage.
+
 La recherche accepte plusieurs mots dans n’importe quel ordre et ignore les accents latins courants : `etoile steam` retrouve par exemple un jeu « Étoile » de Steam. Une recherche vide évite de reconstruire les textes de recherche.
 
 Les vignettes sont limitées à 32 Mo et 4096 × 4096 pixels à la lecture. Les échecs sont mis en cache pour éviter de relire constamment un fichier absent ou endommagé. Après reconnexion d’un disque ou modification d’une image, utiliser **Options → Recharger les vignettes locales**.
