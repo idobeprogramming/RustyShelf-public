@@ -198,6 +198,7 @@ pub struct RustyShelfApp {
     status: String,
     volumes: Vec<Volume>,
     selected_volumes: Vec<bool>,
+    saved_scan_volumes: Option<Vec<PathBuf>>,
     exclusions: Vec<PathBuf>,
     scan_control: Option<ScanControl>,
     scan_receiver: Option<Receiver<ScanEvent>>,
@@ -297,7 +298,12 @@ impl RustyShelfApp {
             .flatten()
             .and_then(|json| serde_json::from_str(&json).ok())
             .unwrap_or_default();
-        let selected_volumes = vec![true; volumes.len()];
+        let saved_scan_volumes = store
+            .as_ref()
+            .and_then(|store| store.preference("selected_scan_volumes").ok())
+            .flatten()
+            .and_then(|json| serde_json::from_str::<Vec<PathBuf>>(&json).ok());
+        let selected_volumes = scan::volume_selection(&volumes, saved_scan_volumes.as_deref());
         Self {
             selected_category: "Tous les jeux".into(),
             search: String::new(),
@@ -313,6 +319,7 @@ impl RustyShelfApp {
             status,
             volumes,
             selected_volumes,
+            saved_scan_volumes,
             exclusions,
             scan_control: None,
             scan_receiver: None,
@@ -548,6 +555,27 @@ impl RustyShelfApp {
             return;
         }
         self.begin_scan(roots, true);
+    }
+
+    fn save_scan_volumes(&mut self) -> bool {
+        let roots = scan::updated_volume_selection(
+            &self.volumes,
+            &self.selected_volumes,
+            self.saved_scan_volumes.as_deref().unwrap_or_default(),
+        );
+        match serde_json::to_string(&roots) {
+            Ok(json)
+                if self.persist(|store| store.set_preference("selected_scan_volumes", &json)) =>
+            {
+                self.saved_scan_volumes = Some(roots);
+                true
+            }
+            Ok(_) => false,
+            Err(error) => {
+                self.status = error.to_string();
+                false
+            }
+        }
     }
 
     fn begin_scan(&mut self, roots: Vec<PathBuf>, include_launcher_catalogs: bool) {
@@ -1904,9 +1932,8 @@ impl RustyShelfApp {
                 }
                 ui.small(tr(self.language, "Le scan d’un dossier analyse seulement son contenu, sans parcourir les autres disques.", "Folder scans only examine that folder, without traversing other drives."));
                 if ui.add_enabled(self.scan_control.is_none(), egui::Button::new(tr(self.language, "Actualiser les disques", "Refresh drives"))).clicked() {
-                    let selected: Vec<PathBuf> = self.volumes.iter().zip(&self.selected_volumes).filter(|(_, selected)| **selected).map(|(volume, _)| volume.root.clone()).collect();
                     self.volumes = scan::mounted_volumes();
-                    self.selected_volumes = self.volumes.iter().map(|volume| selected.contains(&volume.root)).collect();
+                    self.selected_volumes = scan::volume_selection(&self.volumes, self.saved_scan_volumes.as_deref());
                 }
                 if ui.button(tr(self.language, "Réafficher les candidats ignorés", "Restore ignored candidates")).clicked() {
                     if let Some(store) = &self.store {
@@ -1917,6 +1944,8 @@ impl RustyShelfApp {
                     }
                 }
                 ui.label(tr(self.language, "Choisis les disques montés à analyser. Les jeux et images disque trouvés restent locaux.", "Choose mounted drives to scan. Games and disc images stay on this device."));
+                ui.small(tr(self.language, "La sélection est mémorisée, y compris pour les disques temporairement débranchés.", "Selection is remembered, including temporarily disconnected drives."));
+                let previous_selection = self.selected_volumes.clone();
                 egui::ScrollArea::vertical()
                     .id_salt("scan-volumes")
                     .auto_shrink([false, true])
@@ -1941,6 +1970,9 @@ impl RustyShelfApp {
                             )).on_hover_text(volume.root.display().to_string());
                         }
                     });
+                if self.selected_volumes != previous_selection && !self.save_scan_volumes() {
+                    self.selected_volumes = previous_selection;
+                }
                 ui.horizontal(|ui| {
                     if ui.button(tr(self.language, "＋ Exclure un dossier…", "＋ Exclude folder…")).clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_folder() {
@@ -2350,6 +2382,7 @@ mod tests {
             status: "Hors ligne".into(),
             volumes: vec![],
             selected_volumes: vec![],
+            saved_scan_volumes: None,
             exclusions: vec![],
             scan_control: None,
             scan_receiver: None,
@@ -2409,6 +2442,29 @@ mod tests {
             assert!(app.games[0].installations[0].available);
             assert_eq!(app.diagnostics.error_count, usize::from(abrupt));
         }
+    }
+
+    #[test]
+    fn selected_drives_are_persisted_without_losing_disconnected_choices() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("library.db");
+        let mut app = test_app();
+        app.store = Some(Store::open(&path).unwrap());
+        app.volumes = vec![Volume {
+            root: temp.path().join("a"),
+            name: "A".into(),
+            filesystem: "Test".into(),
+            removable: false,
+        }];
+        app.selected_volumes = vec![false];
+        app.saved_scan_volumes = Some(vec![temp.path().join("offline")]);
+        assert!(app.save_scan_volumes());
+        drop(app);
+        let store = Store::open(&path).unwrap();
+        let saved: Vec<PathBuf> =
+            serde_json::from_str(&store.preference("selected_scan_volumes").unwrap().unwrap())
+                .unwrap();
+        assert_eq!(saved, [temp.path().join("offline")]);
     }
 
     #[test]

@@ -17,6 +17,40 @@ pub struct Volume {
     pub removable: bool,
 }
 
+pub fn volume_selection(volumes: &[Volume], saved: Option<&[PathBuf]>) -> Vec<bool> {
+    volumes
+        .iter()
+        .map(|volume| {
+            saved.is_none_or(|saved| saved.iter().any(|root| same_root(root, &volume.root)))
+        })
+        .collect()
+}
+
+pub fn updated_volume_selection(
+    volumes: &[Volume],
+    selected: &[bool],
+    saved: &[PathBuf],
+) -> Vec<PathBuf> {
+    // Retain choices for disconnected drives when editing the currently mounted ones.
+    let mut roots: Vec<_> = saved
+        .iter()
+        .filter(|root| !volumes.iter().any(|volume| same_root(root, &volume.root)))
+        .cloned()
+        .collect();
+    roots.extend(
+        volumes
+            .iter()
+            .zip(selected)
+            .filter(|(_, selected)| **selected)
+            .map(|(volume, _)| volume.root.clone()),
+    );
+    roots
+}
+
+fn same_root(left: &Path, right: &Path) -> bool {
+    path_is_within(left, right) && path_is_within(right, left)
+}
+
 pub fn mounted_volumes() -> Vec<Volume> {
     let disks = Disks::new_with_refreshed_list();
     disks
@@ -454,6 +488,28 @@ mod tests {
     use super::*;
     use std::{fs, sync::mpsc};
     use tempfile::tempdir;
+
+    #[test]
+    fn drive_choices_survive_disconnects_and_do_not_select_new_drives() {
+        let volume = |root: &str| Volume {
+            root: root.into(),
+            name: String::new(),
+            filesystem: String::new(),
+            removable: true,
+        };
+        let mounted = vec![volume("/disk/a"), volume("/disk/b")];
+        assert_eq!(volume_selection(&mounted, None), [true, true]);
+        let saved = updated_volume_selection(&mounted, &[false, true], &[]);
+        assert_eq!(saved, [PathBuf::from("/disk/b")]);
+        let disconnected = vec![volume("/disk/a"), volume("/disk/c")];
+        assert_eq!(
+            volume_selection(&disconnected, Some(&saved)),
+            [false, false]
+        );
+        let saved = updated_volume_selection(&disconnected, &[true, false], &saved);
+        assert_eq!(volume_selection(&mounted, Some(&saved)), [true, true]);
+        assert_eq!(volume_selection(&mounted, Some(&[])), [false, false]);
+    }
 
     #[test]
     fn invalid_or_oversized_shortcuts_cannot_fall_back_to_direct_execution() {
