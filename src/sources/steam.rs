@@ -16,6 +16,14 @@ pub fn discover(
             .iter()
             .flat_map(|root| [root.join("SteamLibrary/steamapps"), root.join("steamapps")]),
     );
+    discover_libraries(steamapps, control, report)
+}
+
+fn discover_libraries(
+    mut steamapps: Vec<PathBuf>,
+    control: &ScanControl,
+    report: &mut dyn FnMut(ScanEvent),
+) -> Vec<Game> {
     let mut result = Vec::new();
     let mut index = 0;
     while index < steamapps.len() {
@@ -33,22 +41,38 @@ pub fn discover(
             .then(|| super::read_or_report(&library.join("libraryfolders.vdf"), report))
             .flatten()
         {
-            for line in vdf.lines().filter(|line| line.contains("\"path\"")) {
-                if let Some(path) = value(line, "path") {
-                    let candidate = PathBuf::from(path.replace("\\\\", "\\")).join("steamapps");
-                    if !steamapps.contains(&candidate) {
-                        steamapps.push(candidate);
+            match library_paths(&vdf) {
+                Ok(paths) => {
+                    for candidate in paths {
+                        if !steamapps.iter().any(|existing| {
+                            crate::scan::path_is_within(existing, &candidate)
+                                && crate::scan::path_is_within(&candidate, existing)
+                        }) {
+                            steamapps.push(candidate);
+                        }
                     }
                 }
+                Err(error) => report(ScanEvent::Error(library.join("libraryfolders.vdf"), error)),
             }
         }
-        let Ok(entries) = fs::read_dir(&library) else {
-            continue;
+        let entries = match fs::read_dir(&library) {
+            Ok(entries) => entries,
+            Err(error) => {
+                report(ScanEvent::Error(library.clone(), error.to_string()));
+                continue;
+            }
         };
-        for entry in entries.flatten() {
+        for entry in entries {
             if control.is_cancelled() {
                 break;
             }
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    report(ScanEvent::Error(library.clone(), error.to_string()));
+                    continue;
+                }
+            };
             let path = entry.path();
             if is_manifest(&path) {
                 match read_manifest(&path) {
@@ -116,12 +140,13 @@ pub fn read_manifest(path: &Path) -> Result<Option<Game>, String> {
     )))
 }
 
-fn value(text: &str, key: &str) -> Option<String> {
-    quoted_tokens(text)
-        .ok()?
+fn library_paths(text: &str) -> Result<Vec<PathBuf>, String> {
+    // Read the whole document: several library records may share a single line.
+    Ok(quoted_tokens(text)?
         .windows(2)
-        .find(|pair| pair[0] == key)
-        .map(|pair| pair[1].clone())
+        .filter(|pair| pair[0] == "path" && !pair[1].trim().is_empty())
+        .map(|pair| PathBuf::from(&pair[1]).join("steamapps"))
+        .collect())
 }
 
 // Valve files can contain multiple fields on one line and escaped quotes.
@@ -183,6 +208,57 @@ fn default_steamapps() -> Vec<PathBuf> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn compact_library_list_finds_all_drives_and_cycles_do_not_repeat_games() {
+        let temp = tempdir().unwrap();
+        let first = temp.path().join("Primary/steamapps");
+        let second = temp.path().join("Disque Été/steamapps");
+        let third = temp.path().join("Third/steamapps");
+        for (index, library) in [&first, &second, &third].into_iter().enumerate() {
+            fs::create_dir_all(library.join("common/Game")).unwrap();
+            fs::write(library.join(format!("appmanifest_{}.acf", index + 1)), format!(
+                "\"AppState\" {{ \"appid\" \"{}\" \"name\" \"Game {}\" \"installdir\" \"Game\" }}", index + 1, index
+            )).unwrap();
+        }
+        let escaped = |library: &Path| {
+            library
+                .parent()
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "\\\\")
+        };
+        fs::write(
+            first.join("libraryfolders.vdf"),
+            format!(
+                "\"libraryfolders\" {{ \"0\" {{ \"path\" \"{}\" }} \"1\" {{ \"path\" \"{}\" }} }}",
+                escaped(&second),
+                escaped(&third)
+            ),
+        )
+        .unwrap();
+        fs::write(
+            second.join("libraryfolders.vdf"),
+            format!("\"path\" \"{}\"", escaped(&first)),
+        )
+        .unwrap();
+        let games =
+            discover_libraries(vec![first.clone()], &ScanControl::default(), &mut |event| {
+                panic!("Unexpected event: {event:?}")
+            });
+        assert_eq!(games.len(), 3);
+        // A broken list is reported, but the primary library is still scanned.
+        fs::write(first.join("libraryfolders.vdf"), "\"path\" \"unterminated").unwrap();
+        let mut errors = Vec::new();
+        let games =
+            discover_libraries(vec![first.clone()], &ScanControl::default(), &mut |event| {
+                if let ScanEvent::Error(path, _) = event {
+                    errors.push(path);
+                }
+            });
+        assert_eq!(games.len(), 1);
+        assert_eq!(errors, [first.join("libraryfolders.vdf")]);
+    }
     #[test]
     fn handles_escaped_titles_and_rejects_invalid_ids_and_paths() {
         let temp = tempdir().unwrap();
