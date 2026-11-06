@@ -229,6 +229,19 @@ pub struct RustyShelfApp {
 }
 
 impl RustyShelfApp {
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.show_options = false;
+            self.show_ignored = false;
+        }
+        if !self.show_options
+            && !self.show_ignored
+            && ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::F))
+        {
+            ctx.memory_mut(|memory| memory.request_focus(egui::Id::new("library-search")));
+        }
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (store, store_error) = match Store::open_default() {
             Ok(store) => (Some(store), None),
@@ -1285,6 +1298,7 @@ impl RustyShelfApp {
             ui.horizontal_wrapped(|ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.search)
+                        .id(egui::Id::new("library-search"))
                         .desired_width(210.0)
                         .hint_text(tr(
                             self.language,
@@ -2460,6 +2474,7 @@ impl Drop for RustyShelfApp {
 
 impl eframe::App for RustyShelfApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.handle_shortcuts(ctx);
         self.poll_scan(ctx);
         self.sidebar(ctx);
         self.content(ctx);
@@ -2475,6 +2490,47 @@ impl eframe::App for RustyShelfApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyboard_shortcuts_close_dialogs_and_focus_search() {
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        let key_input = |key, modifiers| egui::RawInput {
+            modifiers,
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            ..Default::default()
+        };
+        app.show_options = true;
+        let _ = ctx.run(key_input(egui::Key::F, egui::Modifiers::CTRL), |ctx| {
+            app.handle_shortcuts(ctx);
+            assert!(!ctx.memory(|memory| memory.has_focus(egui::Id::new("library-search"))));
+        });
+        app.show_ignored = true;
+        let _ = ctx.run(key_input(egui::Key::Escape, egui::Modifiers::NONE), |ctx| {
+            app.handle_shortcuts(ctx)
+        });
+        assert!(!app.show_options);
+        assert!(!app.show_ignored);
+        let _ = ctx.run(key_input(egui::Key::F, egui::Modifiers::CTRL), |ctx| {
+            app.handle_shortcuts(ctx);
+            app.content(ctx);
+            assert!(ctx.memory(|memory| memory.has_focus(egui::Id::new("library-search"))));
+        });
+        let _ = ctx.run(
+            egui::RawInput {
+                events: vec![egui::Event::Text("Adventure".into())],
+                ..Default::default()
+            },
+            |ctx| app.content(ctx),
+        );
+        assert_eq!(app.search, "Adventure");
+    }
 
     #[test]
     fn scan_updates_keep_custom_titles_visible_before_completion() {
