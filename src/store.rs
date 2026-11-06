@@ -257,6 +257,19 @@ impl Store {
         Ok(())
     }
     pub fn save_game(&self, game: &Game) -> rusqlite::Result<()> {
+        self.save_game_with_visibility(game, false)
+    }
+
+    pub fn save_manual_game(&self, game: &mut Game) -> rusqlite::Result<()> {
+        self.reuse_installation_identity(game)?;
+        self.save_game_with_visibility(game, true)
+    }
+
+    fn save_game_with_visibility(
+        &self,
+        game: &Game,
+        restore_ignored: bool,
+    ) -> rusqlite::Result<()> {
         let tx = self.connection.unchecked_transaction()?;
         let existing: Option<(bool, Option<String>, String, bool, bool)> = tx
             .query_row(
@@ -295,6 +308,9 @@ impl Store {
                  profile=CASE WHEN excluded.launcher='unknown' AND installations.launcher<>'unknown' THEN installations.profile ELSE COALESCE(excluded.profile,installations.profile) END, available=excluded.available",
                 params![game.id, installation.path.to_string_lossy(), launcher_name(&installation.launcher), profile, installation.available],
             )?;
+        }
+        if restore_ignored {
+            tx.execute("DELETE FROM ignored_games WHERE game_id=?1", [&game.id])?;
         }
         tx.commit()
     }
@@ -538,6 +554,51 @@ fn parse_launcher(value: &str) -> Launcher {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn manual_readdition_restores_an_ignored_game_atomically_and_keeps_corrections() {
+        let temp = tempdir().unwrap();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        let mut game = Game::from_installation(
+            "Old",
+            "ROM",
+            Installation {
+                path: temp.path().join("game.iso"),
+                launcher: Launcher::Unknown,
+                launch_profile: None,
+                available: false,
+            },
+        );
+        store.save_game(&game).unwrap();
+        store.set_title(&game.id, "Mon jeu").unwrap();
+        store.set_favorite(&game.id, true).unwrap();
+        store.set_category(&game.id, "Mes aventures").unwrap();
+        store.ignore_game(&game.id).unwrap();
+        let original_id = game.id.clone();
+        game.id = "another-id".into();
+        game.confirmed = true;
+        game.installations[0].launcher = Launcher::Manual;
+        game.installations[0].available = true;
+        store.connection.execute_batch("CREATE TRIGGER prevent_restore BEFORE DELETE ON ignored_games BEGIN SELECT RAISE(ABORT,'refus'); END;").unwrap();
+        assert!(store.save_manual_game(&mut game).is_err());
+        let ignored = store.ignored_games().unwrap();
+        assert_eq!(ignored.len(), 1);
+        assert!(!ignored[0].confirmed);
+        assert!(!ignored[0].installations[0].available);
+        store
+            .connection
+            .execute_batch("DROP TRIGGER prevent_restore;")
+            .unwrap();
+        store.save_manual_game(&mut game).unwrap();
+        assert_eq!(game.id, original_id);
+        let restored = store.games().unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].title, "Mon jeu");
+        assert_eq!(restored[0].category, "Mes aventures");
+        assert!(restored[0].favorite && restored[0].confirmed);
+        assert!(restored[0].installations[0].available);
+        assert!(store.ignored_games().unwrap().is_empty());
+    }
 
     #[test]
     fn custom_titles_survive_scan_reopen_and_can_restore_the_detected_name() {

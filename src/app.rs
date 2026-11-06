@@ -923,18 +923,33 @@ impl RustyShelfApp {
 
     fn add_manual_game(&mut self) {
         let Some(executable) = rfd::FileDialog::new()
-            .add_filter("Exécutable", &["exe", "sh", "x86_64"])
+            .add_filter("Exécutable", &["exe", "sh", "x86_64", "AppImage"])
             .add_filter(
                 "ROM / image disque",
                 &[
                     "nes", "sfc", "smc", "gb", "gbc", "gba", "nds", "3ds", "n64", "z64", "iso",
-                    "chd", "cso", "wbfs", "rvz", "gcm", "cue", "pbp", "gen", "sms", "gg",
+                    "chd", "cso", "wbfs", "rvz", "gcm", "cue", "pbp", "gen", "sms", "gg", "v64",
+                    "cci", "smd", "md", "gcz", "cdi", "nrg", "mdf",
                 ],
             )
+            .add_filter("Tous les fichiers", &["*"])
             .pick_file()
         else {
             return;
         };
+        self.add_manual_path(executable);
+    }
+
+    fn add_manual_path(&mut self, executable: PathBuf) {
+        if !executable.is_file() {
+            self.status = tr(
+                self.language,
+                "Le fichier choisi est introuvable ou inaccessible.",
+                "The selected file is missing or inaccessible.",
+            )
+            .into();
+            return;
+        }
         let title = executable
             .file_stem()
             .map(|name| name.to_string_lossy().into_owned())
@@ -961,10 +976,7 @@ impl RustyShelfApp {
                 available: true,
             },
         );
-        if self.update_library(|store| {
-            store.reuse_installation_identity(&mut game)?;
-            store.save_game(&game)
-        }) {
+        if self.update_library(|store| store.save_manual_game(&mut game)) {
             self.selected_game = Some(game.id);
             self.status = tr(
                 self.language,
@@ -2490,6 +2502,35 @@ impl eframe::App for RustyShelfApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manual_addition_accepts_extensionless_files_and_reports_disappearing_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("run-game");
+        std::fs::write(&executable, []).unwrap();
+        let mut app = test_app();
+        app.store = Some(Store::open(temp.path().join("library.db")).unwrap());
+        app.games.clear();
+        app.add_manual_path(executable.clone());
+        assert_eq!(app.games.len(), 1);
+        assert_eq!(
+            app.games[0].installations[0]
+                .launch_profile
+                .as_ref()
+                .unwrap()
+                .command,
+            executable
+        );
+        let id = app.games[0].id.clone();
+        app.store.as_ref().unwrap().ignore_game(&id).unwrap();
+        app.add_manual_path(executable.clone());
+        assert_eq!(app.games.len(), 1);
+        assert_eq!(app.selected_game.as_ref(), Some(&id));
+        std::fs::remove_file(&executable).unwrap();
+        app.add_manual_path(executable);
+        assert!(app.status.contains("introuvable"));
+        assert_eq!(app.games.len(), 1);
+    }
 
     #[test]
     fn keyboard_shortcuts_close_dialogs_and_focus_search() {
