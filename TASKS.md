@@ -64,6 +64,7 @@ Une tâche à la fois : comprendre, modifier, vérifier les critères, puis cré
 58. [x] Lire les installations Heroic imbriquées et choisir leur lanceur sans deviner depuis le nom de l’utilisateur.
 59. [x] Appliquer le filtre de disponibilité à la source sélectionnée.
 60. [x] Rechercher aussi par disque et dossier d’installation.
-61. [ ] Vérifier la conservation de la console des ROMs `.md` après changement de catégorie et déconnexion du disque.
+61. [x] Conserver la console des ROMs `.md` après changement de catégorie et déconnexion du disque.
+62. [x] Utiliser les associations système pour Heroic/Lutris et ne pas attendre la fermeture des lanceurs.
 
 Critères : formatage, tests concernés, `cargo test`, Clippy sans avertissement. Chaque lot autonome produit un commit séparé. Le pipeline CI exécute ces contrôles et construit les deux paquets à chaque push ou pull request.

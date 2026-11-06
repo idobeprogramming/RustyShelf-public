@@ -133,3 +133,11 @@ Validation : **78 tests passent**, formatage et Clippy passent sous Windows. Les
 - La recherche inclut les chemins d’installation avec la même normalisation des accents que les titres, y compris les disques déconnectés. Elle ne lit aucun dossier pour rechercher.
 
 Validation de ce lot : **84 tests**, formatage et Clippy passent sous Windows. Six tests supplémentaires couvrent Epic, Heroic, les filtres et la recherche par chemin. Aucun jeu lancé, aucune dépendance ajoutée, aucun appel réseau ajouté à l’application. Les fichiers de configuration très volumineux restent soumis à la limite de lecture existante ; les formats Heroic non reconnus restent ajoutables manuellement. La revue continue notamment sur les ROMs dont le type dépend d’un en-tête et sur leur affichage hors ligne.
+
+## ROMs déconnectées et délégation aux lanceurs
+
+- Un test a reproduit la perte de console d’une cartouche Mega Drive `.md` quand sa catégorie avait été personnalisée et que son fichier n’était plus accessible. La classification des fiches possédant déjà une identité de ROM conserve maintenant Mega Drive sans relire leur en-tête à chaque affichage. Les documents Markdown ordinaires ne bénéficient pas de cette exception ; la découverte continue de vérifier la signature SEGA.
+- Les liens Heroic/Lutris passent par l’association enregistrée dans le bureau, au lieu d’exiger un exécutable nommé `heroic` ou `lutris` dans le PATH. Cela permet de déléguer aux installations Flatpak et AppImage correctement enregistrées. Références : [association Heroic Flatpak](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/blob/main/flatpak/com.heroicgameslauncher.hgl.desktop), [association Lutris](https://github.com/lutris/lutris/blob/master/share/applications/net.lutris.Lutris.desktop).
+- L’ouverture d’un dossier ou d’un lien utilise le mode détaché de la dépendance existante `open`. L’interface n’attend plus toute la durée de vie du lanceur. Cette API vérifie brièvement les échecs immédiats ; un échec tardif du lanceur ne peut pas être rapporté comme une validation du démarrage du jeu.
+
+Validation : **85 tests**, formatage et Clippy passent. L’échec `.md` a été observé avant correction. Les associations du bureau doivent être présentes sur la machine ; aucun jeu n’a été lancé pour les vérifier et aucun essai natif Flatpak/CachyOS n’est revendiqué.

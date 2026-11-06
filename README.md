@@ -48,6 +48,8 @@ Pour créer l’archive Linux : `bash build-linux.sh`. Extraire `dist/RustyShelf
 
 Les bibliothèques graphiques fournies par la distribution restent nécessaires. Le pipeline CI vérifie formatage, tests et Clippy, puis produit des archives Windows et Linux à chaque changement poussé ou proposition de fusion. Elles sont téléchargeables comme artefacts de l’exécution CI. Pour valider CachyOS graphiquement, compiler et ouvrir l’application sur une machine CachyOS en session Wayland ou X11.
 
+Heroic et Lutris sont ouverts via leurs associations de liens enregistrées dans le bureau. Une installation Flatpak ou AppImage doit avoir cette association configurée. RustyShelf ne demande plus que leur exécutable soit directement accessible dans le PATH, et n’attend pas la fermeture du lanceur pour rendre la main.
+
 ## Données
 
 La bibliothèque SQLite est enregistrée dans le dossier de données local de l’utilisateur sous `RustyShelf/`. Si une bibliothèque GameShelf existe déjà, RustyShelf la réutilise à son emplacement initial avec ses favoris et paramètres. Les chemins d’installation et de jaquette sont stockés localement. Aucun scan ne monte de disque ou ne modifie les fichiers de jeu.
