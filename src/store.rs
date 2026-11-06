@@ -103,6 +103,11 @@ impl Store {
 
     fn merge_legacy_duplicates(&self) -> rusqlite::Result<()> {
         let tx = self.connection.unchecked_transaction()?;
+        let mut overrides: std::collections::HashMap<String, String> = self
+            .preference("console_overrides")?
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default();
+        let mut overrides_changed = false;
         let records = {
             let mut query = tx.prepare(
                 "SELECT id,title,category,favorite,confirmed,cover_path,category_custom FROM games",
@@ -157,7 +162,18 @@ impl Store {
             )?;
             tx.execute("INSERT OR IGNORE INTO game_emulators(game_id,emulator_id) SELECT ?1,emulator_id FROM game_emulators WHERE game_id=?2", params![new_id, old_id])?;
             tx.execute("INSERT OR IGNORE INTO ignored_games(game_id) SELECT ?1 FROM ignored_games WHERE game_id=?2", params![new_id, old_id])?;
+            if let Some(console) = overrides.remove(&old_id) {
+                // A correction already attached to the surviving record wins.
+                overrides.entry(new_id).or_insert(console);
+                overrides_changed = true;
+            }
+            tx.execute("DELETE FROM ignored_games WHERE game_id=?1", [&old_id])?;
             tx.execute("DELETE FROM games WHERE id=?1", [&old_id])?;
+        }
+        if overrides_changed {
+            let json = serde_json::to_string(&overrides)
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+            tx.execute("INSERT INTO preferences(key,value) VALUES('console_overrides',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json])?;
         }
         tx.commit()
     }
@@ -488,6 +504,52 @@ fn parse_launcher(value: &str) -> Launcher {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn migrating_legacy_ids_preserves_console_overrides_and_ignored_state() {
+        let temp = tempdir().unwrap();
+        let database = temp.path().join("library.db");
+        let mut game = Game::from_installation(
+            "Adventure",
+            "ROM",
+            Installation {
+                path: temp.path().join("Adventure.iso"),
+                launcher: Launcher::Manual,
+                launch_profile: None,
+                available: false,
+            },
+        );
+        let new_id = game.id.clone();
+        game.id = "legacy-image-id".into();
+        {
+            let store = Store::open(&database).unwrap();
+            store.save_game(&game).unwrap();
+            store.set_favorite(&game.id, true).unwrap();
+            store.ignore_game(&game.id).unwrap();
+            store
+                .set_preference(
+                    "console_overrides",
+                    &serde_json::json!({game.id.clone(): "PlayStation 2"}).to_string(),
+                )
+                .unwrap();
+        }
+        for _ in 0..2 {
+            let store = Store::open(&database).unwrap();
+            assert!(store.games().unwrap().is_empty());
+            let ignored = store.ignored_games().unwrap();
+            assert_eq!(ignored.len(), 1);
+            assert_eq!(ignored[0].id, new_id);
+            assert!(ignored[0].favorite);
+            let overrides: std::collections::HashMap<String, String> =
+                serde_json::from_str(&store.preference("console_overrides").unwrap().unwrap())
+                    .unwrap();
+            assert_eq!(
+                overrides.get(&new_id).map(String::as_str),
+                Some("PlayStation 2")
+            );
+            assert!(!overrides.contains_key(&game.id));
+        }
+    }
 
     #[test]
     fn batch_review_is_atomic_and_never_modifies_confirmed_games() {
