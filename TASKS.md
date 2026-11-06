@@ -46,4 +46,9 @@ Une tâche à la fois : comprendre, modifier, vérifier les critères, puis cré
 41. [x] Ajouter le scan ciblé d’un dossier et préserver les autres installations.
 42. [x] Revoir les identités Windows et les profils Lutris incomplets.
 
+43. [x] Réduire et mesurer le coût de chargement des grandes bibliothèques.
+44. [x] Borner le décodage des vignettes et mettre les échecs en cache.
+45. [x] Rechercher plusieurs mots sans accents et réduire les allocations du tri.
+46. [x] Confirmer ou ignorer les candidats sélectionnés par lot, avec transaction.
+
 Critères : formatage, tests concernés, `cargo test`, Clippy sans avertissement. Chaque lot autonome produit un commit séparé. Le pipeline CI exécute ces contrôles et construit les deux paquets à chaque push ou pull request.

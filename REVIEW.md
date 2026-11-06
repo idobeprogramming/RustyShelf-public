@@ -16,7 +16,7 @@
 
 ## Vérification et limites
 
-60 tests Rust passent sous Windows, ainsi que le formatage et Clippy. Les nouveaux tests de régression utilisent des données temporaires et des commandes fictives ; aucun jeu réel n’est lancé.
+65 tests Rust passent sous Windows, ainsi que le formatage et Clippy. Les nouveaux tests de régression utilisent des données temporaires et des commandes fictives ; aucun jeu réel n’est lancé.
 
 La détection autonome reste une heuristique : les moteurs inconnus et jeux sans fichiers reconnaissables nécessitent l’ajout manuel. Une application utilisant un moteur de jeu peut encore être proposée à confirmation. Les formats de configuration des lanceurs peuvent évoluer.
 
@@ -82,3 +82,16 @@ Validation : 60 tests passent, formatage et Clippy passent. Aucun jeu réel n’
 Références de format utilisées pendant le développement (aucun accès réseau dans l’application) : [tâches GOG documentées par Heroic](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/wiki/How-To%3A-DOSBOX-and-SCUMMVM), [signatures de conteneurs utilisées par PPSSPP](https://github.com/hrydgard/ppsspp/blob/master/Core/FileSystems/BlockDevices.cpp).
 
 Les raccourcis Linux utilisent aussi la lecture bornée : un fichier illisible ou trop volumineux ne peut plus être traité comme un exécutable ordinaire. Un test couvre ce cas même en présence de fichiers de moteur de jeu.
+
+
+## Optimisations et gestion des grandes collections
+
+- Chargement du catalogue par une seule requête avec jointure, au lieu d’une requête supplémentaire par jeu. Index de chemins pour les rapprochements et mises à jour de disponibilité. Recherche des chemins vus avec un ensemble, au lieu d’un parcours linéaire pour chaque installation.
+- Mesure indicative en compilation de test sous Windows, cinq lectures d’une base temporaire de 3 000 jeux / 6 000 installations : médiane de **296,24 ms avant** et **9,81 ms après**. Cela mesure `Store::games`, pas le démarrage complet ni le rendu de l’application. Le test vérifie aussi les installations multiples, leur ordre, les jeux ignorés et les jeux sans installation ; aucun seuil temporel fragile ne fait échouer la suite.
+- Recherche préparée une fois par affichage, termes multiples sans accents latins courants, recherche dans les sources, absence de normalisation des titres lorsque la recherche est vide. Le tri calcule la clé de chaque titre une seule fois.
+- Cache borné des vignettes, y compris les lectures échouées, invalidé lors d’un changement de chemin ou d’un rechargement explicite. Limites de dimensions et de taille avant affichage. Un choix manuel illisible affiche une erreur sans remplacer la vignette enregistrée.
+- Traitement par lot des candidats : cases à cocher, sélection des résultats, confirmation et ignorance transactionnelles. Une sélection masquée par un filtre est retirée ; les jeux déjà confirmés sont protégés par les requêtes elles-mêmes. Un test injecte un refus SQLite et vérifie le retour arrière complet.
+- Les titres sont limités au rectangle de leur carte pour éviter le débordement sur les cartes voisines. Le test de rendu couvre aussi les cases de sélection dans la vue À confirmer aux largeurs 780 et 1280.
+- Le paquet Windows localise le binaire dans le dossier réellement utilisé par Cargo, y compris lorsqu’un dossier de compilation séparé est choisi. Cela évite d’emballer un ancien binaire dans ce cas.
+
+Validation : 65 tests, formatage et Clippy passent. Aucune dépendance ajoutée. L’optimisation ne rend pas le décodage des images asynchrone et la bibliothèque reste en mémoire ; ces limites restent pertinentes pour des collections extrêmes. Aucun test graphique natif CachyOS n’a été exécuté.
