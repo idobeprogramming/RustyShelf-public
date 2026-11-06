@@ -273,16 +273,24 @@ impl Store {
     }
 
     pub fn games(&self) -> rusqlite::Result<Vec<Game>> {
+        self.read_games(false)
+    }
+
+    pub fn ignored_games(&self) -> rusqlite::Result<Vec<Game>> {
+        self.read_games(true)
+    }
+
+    fn read_games(&self, ignored: bool) -> rusqlite::Result<Vec<Game>> {
         // One ordered join replaces one query per game. LEFT JOIN retains games
         // without an installation (for example after importing an older library).
         let mut statement = self.connection.prepare(
             "SELECT g.id,g.title,g.category,g.favorite,g.confirmed,g.cover_path,
                     i.path,i.launcher,i.profile,i.available
              FROM games g LEFT JOIN installations i ON i.game_id=g.id
-             WHERE NOT EXISTS (SELECT 1 FROM ignored_games WHERE game_id=g.id)
+             WHERE EXISTS (SELECT 1 FROM ignored_games WHERE game_id=g.id)=?1
              ORDER BY g.title COLLATE NOCASE,g.id,i.path",
         )?;
-        let mut rows = statement.query([])?;
+        let mut rows = statement.query([ignored])?;
         let mut games: Vec<Game> = Vec::new();
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;
@@ -361,6 +369,12 @@ impl Store {
 
     pub fn restore_ignored_games(&self) -> rusqlite::Result<()> {
         self.connection.execute("DELETE FROM ignored_games", [])?;
+        Ok(())
+    }
+
+    pub fn restore_ignored_game(&self, id: &str) -> rusqlite::Result<()> {
+        self.connection
+            .execute("DELETE FROM ignored_games WHERE game_id=?1", [id])?;
         Ok(())
     }
 

@@ -191,6 +191,9 @@ pub struct RustyShelfApp {
     selected_category: String,
     search: String,
     show_options: bool,
+    show_ignored: bool,
+    ignored_games: Vec<Game>,
+    ignored_search: String,
     games: Vec<Game>,
     selected_game: Option<String>,
     review_selection: HashSet<String>,
@@ -308,6 +311,9 @@ impl RustyShelfApp {
             selected_category: "Tous les jeux".into(),
             search: String::new(),
             show_options: false,
+            show_ignored: false,
+            ignored_games: Vec::new(),
+            ignored_search: String::new(),
             selected_game: games
                 .iter()
                 .find(|game| game.confirmed)
@@ -423,6 +429,79 @@ impl RustyShelfApp {
                     ),
                 }
             );
+        }
+    }
+
+    fn open_ignored_games(&mut self) {
+        if let Some(store) = &self.store {
+            match store.ignored_games() {
+                Ok(games) => {
+                    self.ignored_games = games;
+                    self.show_ignored = true;
+                    self.show_options = false;
+                }
+                Err(error) => self.status = error.to_string(),
+            }
+        } else {
+            self.persist(|_| Ok(()));
+        }
+    }
+
+    fn restore_ignored_item(&mut self, id: &str) {
+        if self.update_library(|store| store.restore_ignored_game(id)) {
+            self.ignored_games.retain(|game| game.id != id);
+            self.status = tr(
+                self.language,
+                "Élément restauré dans la bibliothèque.",
+                "Item restored to the library.",
+            )
+            .into();
+        }
+    }
+
+    fn ignored_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_ignored;
+        let mut restore = None;
+        let mut restore_all = false;
+        egui::Window::new(tr(self.language, "Éléments ignorés", "Ignored items"))
+            .id(egui::Id::new("ignored-items-window")).open(&mut open)
+            .collapsible(false).resizable(true).default_width(650.0)
+            .min_width((ctx.screen_rect().width() - 48.0).clamp(280.0, 480.0))
+            .show(ctx, |ui| {
+                ui.label(tr(self.language, "Restaure uniquement les éléments souhaités. Aucun fichier de jeu n’a été supprimé.", "Restore only the items you want. No game files were deleted."));
+                ui.add(egui::TextEdit::singleline(&mut self.ignored_search).hint_text(tr(self.language, "Rechercher un élément ignoré…", "Search ignored items…")));
+                let query = SearchQuery::new(&self.ignored_search);
+                let filters = Filters::default();
+                let games: Vec<_> = self.ignored_games.iter().filter(|game| filters.matches(game, &query, self.game_console(game))).collect();
+                ui.label(format!("{} / {}", games.len(), self.ignored_games.len()));
+                egui::ScrollArea::vertical().id_salt("ignored-items-list").auto_shrink([false, true])
+                    .max_height(360.0).show_rows(ui, 64.0, games.len(), |ui, range| {
+                        for index in range {
+                            let game = games[index];
+                            ui.push_id(&game.id, |ui| {
+                                ui.set_min_height(64.0);
+                                ui.horizontal(|ui| {
+                                    if ui.button(tr(self.language, "Restaurer", "Restore")).clicked() { restore = Some(game.id.clone()); }
+                                    ui.add(egui::Label::new(RichText::new(&game.title).strong()).truncate()).on_hover_text(&game.title);
+                                });
+                                if let Some(installation) = game.installations.first() {
+                                    let path = installation.path.display().to_string();
+                                    ui.add(egui::Label::new(&path).truncate()).on_hover_text(&path);
+                                }
+                                ui.separator();
+                            });
+                        }
+                    });
+                if self.ignored_games.is_empty() { ui.label(tr(self.language, "Aucun élément ignoré.", "No ignored items.")); }
+                if ui.add_enabled(!self.ignored_games.is_empty(), egui::Button::new(tr(self.language, "Tout restaurer", "Restore all"))).clicked() { restore_all = true; }
+                ui.small(&self.status);
+            });
+        self.show_ignored = open;
+        if let Some(id) = restore {
+            self.restore_ignored_item(&id);
+        }
+        if restore_all && self.update_library(Store::restore_ignored_games) {
+            self.ignored_games.clear();
         }
     }
 
@@ -1935,14 +2014,7 @@ impl RustyShelfApp {
                     self.volumes = scan::mounted_volumes();
                     self.selected_volumes = scan::volume_selection(&self.volumes, self.saved_scan_volumes.as_deref());
                 }
-                if ui.button(tr(self.language, "Réafficher les candidats ignorés", "Restore ignored candidates")).clicked() {
-                    if let Some(store) = &self.store {
-                        match store.restore_ignored_games().and_then(|_| store.games()) {
-                            Ok(games) => self.games = deduplicate_library(games),
-                            Err(error) => self.status = error.to_string(),
-                        }
-                    }
-                }
+                if ui.button(tr(self.language, "Gérer les éléments ignorés…", "Manage ignored items…")).clicked() { self.open_ignored_games(); }
                 ui.label(tr(self.language, "Choisis les disques montés à analyser. Les jeux et images disque trouvés restent locaux.", "Choose mounted drives to scan. Games and disc images stay on this device."));
                 ui.small(tr(self.language, "La sélection est mémorisée, y compris pour les disques temporairement débranchés.", "Selection is remembered, including temporarily disconnected drives."));
                 let previous_selection = self.selected_volumes.clone();
@@ -2329,6 +2401,9 @@ impl eframe::App for RustyShelfApp {
         if self.show_options {
             self.options_window(ctx);
         }
+        if self.show_ignored {
+            self.ignored_window(ctx);
+        }
     }
 }
 
@@ -2375,6 +2450,9 @@ mod tests {
             selected_category: "ROMs".into(),
             search: String::new(),
             show_options: false,
+            show_ignored: false,
+            ignored_games: Vec::new(),
+            ignored_search: String::new(),
             games,
             selected_game: None,
             review_selection: HashSet::new(),
@@ -2442,6 +2520,38 @@ mod tests {
             assert!(app.games[0].installations[0].available);
             assert_eq!(app.diagnostics.error_count, usize::from(abrupt));
         }
+    }
+
+    #[test]
+    fn ignored_items_can_be_restored_one_at_a_time_with_their_corrections() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = test_app();
+        app.games.truncate(2);
+        app.games[0].favorite = true;
+        app.games[0].category = "Mes aventures".into();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        for game in &app.games {
+            store.save_game(game).unwrap();
+            store.ignore_game(&game.id).unwrap();
+        }
+        let restored = app.games[0].id.clone();
+        let still_hidden = app.games[1].id.clone();
+        app.store = Some(store);
+        app.open_ignored_games();
+        assert!(app.show_ignored);
+        assert_eq!(app.ignored_games.len(), 2);
+        let ctx = egui::Context::default();
+        let output = ctx.run(egui::RawInput::default(), |ctx| app.ignored_window(ctx));
+        assert!(!output.shapes.is_empty());
+        app.restore_ignored_item(&restored);
+        assert_eq!(app.games.len(), 1);
+        assert!(app.games[0].favorite);
+        assert_eq!(app.games[0].category, "Mes aventures");
+        assert_eq!(app.ignored_games.len(), 1);
+        let store = app.store.as_ref().unwrap();
+        assert!(store.is_ignored(&still_hidden).unwrap());
+        assert_eq!(store.ignored_games().unwrap()[0].id, still_hidden);
+        assert!(!store.is_ignored(&restored).unwrap());
     }
 
     #[test]
