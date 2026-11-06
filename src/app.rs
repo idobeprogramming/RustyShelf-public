@@ -723,7 +723,10 @@ impl RustyShelfApp {
         self.scan_receiver = Some(receiver);
         self.scan_visited = 0;
         self.scan_current.clear();
-        self.diagnostics = ScanDiagnostics::default();
+        self.diagnostics = ScanDiagnostics {
+            roots: self.scan_roots.clone(),
+            ..Default::default()
+        };
         self.status = tr(
             self.language,
             "Analyse des disques en cours…",
@@ -791,6 +794,7 @@ impl RustyShelfApp {
                 }
                 ScanEvent::Progress(progress) => {
                     self.scan_visited = progress.visited;
+                    self.diagnostics.visited = progress.visited;
                     self.scan_current = progress.current.to_string_lossy().to_string();
                 }
                 ScanEvent::Error(path, message) => {
@@ -807,6 +811,8 @@ impl RustyShelfApp {
                 }
                 ScanEvent::Finished { visited, cancelled } => {
                     self.scan_visited = visited;
+                    self.diagnostics.visited = visited;
+                    self.diagnostics.cancelled = Some(cancelled);
                     if let Some(store) = &self.store {
                         if !cancelled {
                             if let Err(error) = store.mark_unseen_under_roots_unavailable(
@@ -2097,6 +2103,18 @@ impl RustyShelfApp {
                 }
                 ui.separator();
                 ui.heading(tr(self.language, "Rapport du dernier scan", "Last scan report"));
+                let state = match self.diagnostics.cancelled {
+                    Some(true) => tr(self.language, "Interrompu", "Interrupted"),
+                    Some(false) => tr(self.language, "Terminé", "Complete"),
+                    None if self.scan_control.is_some() => tr(self.language, "En cours", "In progress"),
+                    None => tr(self.language, "État final non enregistré", "Final state not recorded"),
+                };
+                ui.label(format!("{state} · {} {}", self.diagnostics.visited, tr(self.language, "éléments parcourus", "items scanned")));
+                if !self.diagnostics.roots.is_empty() {
+                    ui.collapsing(tr(self.language, "Disques et dossiers choisis", "Selected drives and folders"), |ui| {
+                        for root in &self.diagnostics.roots { ui.label(root.display().to_string()); }
+                    });
+                }
                 ui.label(format!("{} {} · {} {}", self.diagnostics.error_count, tr(self.language, "erreur(s)", "error(s)"), self.diagnostics.skipped_count, tr(self.language, "chemin(s) non analysé(s)", "skipped path(s)")));
                 if self.diagnostics.skipped_count > 0 {
                     ui.collapsing(tr(self.language, "Dossiers protégés ou indisponibles", "Protected or unavailable folders"), |ui| {
@@ -2648,6 +2666,8 @@ mod tests {
             std::thread::yield_now();
         }
         assert_eq!(app.scan_roots, [chosen]);
+        assert_eq!(app.diagnostics.roots, app.scan_roots);
+        assert_eq!(app.diagnostics.cancelled, Some(false));
         assert_eq!(app.diagnostics.error_count, 0);
         assert!(app
             .games
