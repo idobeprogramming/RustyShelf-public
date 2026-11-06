@@ -1400,10 +1400,18 @@ impl RustyShelfApp {
                                         rect.min + Vec2::splat(8.0),
                                         Vec2::new(width - 16.0, 112.0),
                                     );
+                                    painter.rect_filled(
+                                        cover,
+                                        radius.min(8),
+                                        placeholder_color(self.theme),
+                                    );
                                     if let Some(texture) = texture {
+                                        let size = texture.size_vec2();
+                                        let scale = (cover.width() / size.x).min(cover.height() / size.y);
+                                        let image_rect = egui::Rect::from_center_size(cover.center(), size * scale);
                                         painter.image(
                                             texture.id(),
-                                            cover,
+                                            image_rect,
                                             egui::Rect::from_min_max(
                                                 egui::Pos2::ZERO,
                                                 egui::pos2(1.0, 1.0),
@@ -1411,11 +1419,6 @@ impl RustyShelfApp {
                                             Color32::WHITE,
                                         );
                                     } else {
-                                        painter.rect_filled(
-                                            cover,
-                                            radius.min(8),
-                                            placeholder_color(self.theme),
-                                        );
                                         let initials = game
                                             .title
                                             .chars()
@@ -1819,7 +1822,11 @@ impl RustyShelfApp {
             ui.label(if installation.available {
                 tr(self.language, "Disponible", "Available")
             } else {
-                tr(self.language, "Disque indisponible", "Drive unavailable")
+                tr(
+                    self.language,
+                    "Installation indisponible",
+                    "Installation unavailable",
+                )
             });
             if crate::rom::console(&installation.path).is_some() && installation.available {
                 if ui
