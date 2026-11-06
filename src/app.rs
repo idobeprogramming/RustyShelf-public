@@ -2648,7 +2648,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let chosen = temp.path().join("roms");
         std::fs::create_dir(&chosen).unwrap();
-        std::fs::write(chosen.join("Étoiles.nes"), []).unwrap();
+        std::fs::write(
+            chosen.join("Étoiles.nes"),
+            b"NES\x1a\0\0\0\0\0\0\0\0\0\0\0\0",
+        )
+        .unwrap();
         let mut app = test_app();
         let outside = app.games[0].clone();
         let store = Store::open(temp.path().join("library.db")).unwrap();

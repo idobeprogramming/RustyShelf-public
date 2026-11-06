@@ -89,6 +89,27 @@ fn has_signature(path: &Path, offset: u64, expected: &[u8]) -> bool {
         && signature == expected
 }
 
+fn has_cartridge_header(path: &Path, n64: bool) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut header = [0u8; 64];
+    let length = if n64 { 64 } else { 16 };
+    if file.read_exact(&mut header[..length]).is_err() {
+        return false;
+    }
+    if n64 {
+        // Accept all three byte orders, regardless of the filename extension.
+        matches!(
+            header[..4],
+            [0x80, 0x37, 0x12, 0x40] | [0x37, 0x80, 0x40, 0x12] | [0x40, 0x12, 0x37, 0x80]
+        )
+    } else {
+        header.starts_with(b"NES\x1a")
+    }
+}
+
 /// Discovery is stricter than classification of an already accepted/offline game.
 /// In particular, .cso shaders, .gen generated files and .mdf databases are common.
 pub fn scan_candidate(path: &Path) -> bool {
@@ -96,6 +117,8 @@ pub fn scan_candidate(path: &Path) -> bool {
         return false;
     };
     match extension.to_ascii_lowercase().as_str() {
+        "nes" => has_cartridge_header(path, false),
+        "n64" | "z64" | "v64" => has_cartridge_header(path, true),
         "gen" | "md" => has_sega_header(path),
         "cso" => has_signature(path, 0, b"CISO"),
         "chd" => has_signature(path, 0, b"MComprHD"),
@@ -153,6 +176,39 @@ pub fn assignable_console(console: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cartridge_detection_checks_headers_without_trusting_extensions() {
+        let temp = tempfile::tempdir().unwrap();
+        for extension in ["NES", "n64", "z64", "v64"] {
+            let path = temp.path().join(format!("Été.{extension}"));
+            assert!(!scan_candidate(&path));
+            for bytes in [b"".as_slice(), b"NES\x1a", b"ordinary application data"] {
+                std::fs::write(&path, bytes).unwrap();
+                assert!(!scan_candidate(&path));
+            }
+            if extension == "NES" {
+                let mut header = [0; 16];
+                header[..4].copy_from_slice(b"NES\x1a");
+                std::fs::write(&path, header).unwrap();
+                assert!(scan_candidate(&path));
+            } else {
+                for signature in [
+                    [0x80, 0x37, 0x12, 0x40],
+                    [0x37, 0x80, 0x40, 0x12],
+                    [0x40, 0x12, 0x37, 0x80],
+                ] {
+                    let mut header = [0; 64];
+                    header[..4].copy_from_slice(&signature);
+                    std::fs::write(&path, header).unwrap();
+                    assert!(scan_candidate(&path));
+                }
+            }
+            // Offline classification must not forget an accepted game's console.
+            std::fs::remove_file(&path).unwrap();
+            assert!(console(&path).is_some());
+        }
+    }
 
     #[test]
     fn ambiguous_formats_require_rom_context_and_mdf_requires_a_descriptor() {

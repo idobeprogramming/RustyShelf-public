@@ -528,7 +528,11 @@ mod tests {
         let roms = temp.path().join("roms");
         fs::create_dir(&roms).unwrap();
         for index in 0..5 {
-            fs::write(roms.join(format!("game{index}.nes")), []).unwrap();
+            fs::write(
+                roms.join(format!("game{index}.nes")),
+                b"NES\x1a\0\0\0\0\0\0\0\0\0\0\0\0",
+            )
+            .unwrap();
         }
         let roots = [roms, temp.path().to_owned(), temp.path().to_owned()];
         assert_eq!(unique_roots(&roots), [temp.path().to_owned()]);
@@ -693,7 +697,7 @@ mod tests {
         let temp = tempdir().unwrap();
         let roms = temp.path().join("roms/NES");
         fs::create_dir_all(&roms).unwrap();
-        fs::write(roms.join("Étoiles.nes"), []).unwrap();
+        fs::write(roms.join("Étoiles.nes"), b"NES\x1a\0\0\0\0\0\0\0\0\0\0\0\0").unwrap();
         fs::write(roms.join("README.md"), b"documentation").unwrap();
         let mut games = Vec::new();
         scan_roots(
