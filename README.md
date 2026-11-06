@@ -66,6 +66,12 @@ Voir [TASKS.md](TASKS.md) pour le découpage en tâches de Luna.
 
 Les options disposent d’une croix de fermeture. Leur liste de disques occupe toute la largeur et affiche le chemin séparément des détails.
 
+Le choix des disques est mémorisé après redémarrage, même lorsqu’un disque est débranché. Un nouveau disque doit être coché après actualisation. Les choix reposent sur le chemin de montage : un changement de lettre Windows ou de point de montage Linux demande une nouvelle sélection.
+
+**Options → Gérer les éléments ignorés…** permet de rechercher un élément, consulter son chemin et le restaurer individuellement avec ses favoris et ses catégories. **Tout restaurer** réaffiche tous les éléments ignorés, indépendamment de la recherche. Le rapport de scan conserve aussi les disques/dossiers choisis, le nombre d’éléments parcourus et l’état terminé/interrompu.
+
+La découverte vérifie les en-têtes NES et Nintendo 64 ; les trois ordres d’octets N64 sont acceptés quelle que soit l’extension N64 utilisée. Ces contrôles ne certifient pas l’intégrité du jeu complet. Les formats inhabituels restent ajoutables manuellement. Les fichiers déjà acceptés ne sont pas supprimés par ces nouvelles règles.
+
 Le scan évite de parcourir deux fois des racines imbriquées. L’annulation est vérifiée entre les fichiers, y compris pendant la découverte des lanceurs ; une lecture système en cours doit toutefois se terminer. Les manifestes lus sont limités à 4 Mo et leurs erreurs sont intégrées au rapport. Les profils Lutris sans exécutable local résolu sont signalés comme non analysés.
 
 La recherche accepte plusieurs mots dans n’importe quel ordre et ignore les accents latins courants : `etoile steam` retrouve par exemple un jeu « Étoile » de Steam. Une recherche vide évite de reconstruire les textes de recherche.

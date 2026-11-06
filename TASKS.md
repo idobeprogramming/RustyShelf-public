@@ -50,5 +50,10 @@ Une tâche à la fois : comprendre, modifier, vérifier les critères, puis cré
 44. [x] Borner le décodage des vignettes et mettre les échecs en cache.
 45. [x] Rechercher plusieurs mots sans accents et réduire les allocations du tri.
 46. [x] Confirmer ou ignorer les candidats sélectionnés par lot, avec transaction.
+47. [x] Mémoriser les disques sélectionnés, y compris pendant leur déconnexion.
+48. [x] Rechercher les éléments ignorés et les restaurer individuellement.
+49. [x] Conserver le périmètre, le nombre d’éléments parcourus et l’issue du scan.
+50. [x] Contrôler les en-têtes NES/Nintendo 64 pendant la découverte.
+51. [x] Lire toutes les bibliothèques Steam dans les listes compactes et signaler les erreurs.
 
 Critères : formatage, tests concernés, `cargo test`, Clippy sans avertissement. Chaque lot autonome produit un commit séparé. Le pipeline CI exécute ces contrôles et construit les deux paquets à chaque push ou pull request.
