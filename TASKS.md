@@ -69,5 +69,11 @@ Une tâche à la fois : comprendre, modifier, vérifier les critères, puis cré
 63. [x] Renommer un jeu sans écraser son nom détecté ni perdre ce choix après un scan.
 64. [x] Distribuer un exécutable Windows graphique sans console supplémentaire.
 65. [x] Ajouter Ctrl+F pour rechercher et Échap pour fermer les fenêtres secondaires.
+66. [x] Restaurer une fiche ignorée lors de son ajout manuel explicite, dans une transaction.
+67. [x] Préserver les métadonnées et profils des lanceurs lors d’un ajout manuel ; compléter seulement les profils absents.
+68. [x] Accepter l’ajout des exécutables sans extension et signaler un fichier disparu.
+69. [x] Réutiliser l’écriture de tous les chemins d’installations correspondants lors d’un scan Windows.
+70. [x] Préserver le thème choisi face au thème système et corriger les titres illisibles.
+71. [x] Détecter les cartouches 3DS par en-tête sans imposer le nom du dossier, y compris à l’ajout manuel.
 
 Critères : formatage, tests concernés, `cargo test`, Clippy sans avertissement. Chaque lot autonome produit un commit séparé. Le pipeline CI exécute ces contrôles et construit les deux paquets à chaque push ou pull request.

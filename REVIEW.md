@@ -151,3 +151,21 @@ Validation : **85 tests**, formatage et Clippy passent. L’échec `.md` a été
 Validation : **88 tests**, formatage et Clippy passent sous Windows. Le renommage ne touche aucun fichier de jeu. La validation graphique native Windows/CachyOS reste distincte des tests de rendu egui existants.
 
 Les raccourcis `Ctrl+F` et `Échap` complètent ce lot. Un test envoie de vrais événements clavier egui, vérifie que la recherche ne prend pas le focus derrière les options, ferme les fenêtres secondaires, puis saisit du texte dans le champ de recherche focalisé. **89 tests passent**, ainsi que le formatage et Clippy. Le mode `WindowsGui` a été lu dans l’en-tête PE de l’exécutable optimisé.
+
+## Ajouts manuels et installations multiples
+
+- Réajouter explicitement un fichier restaure sa fiche ignorée dans la même transaction que l’enregistrement. Un scan ordinaire ne restaure pas les fiches ignorées. Un test injecte un refus SQLite pour vérifier le retour arrière et la conservation des corrections, du favori et de la catégorie.
+- Un ajout manuel conserve le titre, la source et le profil d’un lanceur déjà reconnu. Il peut fournir un profil direct si celui-ci manque. Les tests couvrent Steam et un profil GOG absent.
+- Le sélecteur propose tous les fichiers pour les exécutables Linux sans extension et davantage d’extensions ROM. Un fichier disparu ou inaccessible produit un message sans effacer la bibliothèque.
+- Le rapprochement des installations normalise maintenant tous les chemins déjà connus, et pas seulement le premier : deux installations Windows rescannées avec une casse différente ne créent plus de lignes supplémentaires.
+
+Validation de ce lot : **94 tests**, formatage et Clippy passent, fichiers et bases temporaires uniquement.
+
+## Contrôle visuel Windows, thèmes et cartouches 3DS
+
+- L’ouverture native de la version Windows a permis de vérifier la hauteur régulière des cartes et la fermeture des options par leur croix. Ce contrôle a révélé des titres sombres sur le fond bleu de Prisme : egui utilise la couleur des boutons pressés pour le texte fort. Les titres de navigation, fiches et éléments ignorés reçoivent désormais la couleur de texte du thème ou du CSS. Le texte courant est éclairci dans les thèmes sombres et les options de Prisme sont moins transparentes.
+- Un événement de thème système pouvait remplacer le style choisi. Le choix clair/sombre est maintenant explicite dans le contexte graphique. Deux tests reproduisaient les défauts avant correction : changement de thème système et couleur réellement produite dans les formes de texte.
+- Les `.3ds` étaient ignorés hors d’un dossier ROMs, et le dossier suffisait à accepter des modèles 3D. La détection `.3ds`/`.cci` lit désormais un en-tête NCSD complet de 512 octets avec sa signature à l’offset 0x100. Référence : [structures du conteneur Azahar](https://github.com/azahar-emu/azahar/blob/master/src/core/file_sys/ncch_container.h) et [identification du format](https://github.com/azahar-emu/azahar/blob/master/src/core/loader/ncch.cpp). Aucun code de l’émulateur n’est incorporé. Ce filtre ne vérifie pas le contenu complet ni le déchiffrement.
+- Les tests couvrent les fichiers absents, les en-têtes tronqués, les noms Unicode, les extensions majuscules, le parcours réel de dossiers temporaires et l’ajout manuel sans profil de lancement direct. Les cartouches acceptées conservent leur console hors ligne, sans relire leur en-tête à chaque affichage.
+
+Validation : **99 tests**, formatage et Clippy passent sous Windows. Aucun jeu réel lancé, aucune dépendance ajoutée. L’avertissement de liens physiques du cache de compilation sur X: persiste ; il n’est pas un avertissement du code. La validation graphique native CachyOS reste à effectuer.
