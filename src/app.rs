@@ -1276,8 +1276,8 @@ impl RustyShelfApp {
                         .desired_width(210.0)
                         .hint_text(tr(
                             self.language,
-                            "Titre, console, source…",
-                            "Title, console, source…",
+                            "Titre, console, source, dossier…",
+                            "Title, console, source, folder…",
                         )),
                 );
                 if ui

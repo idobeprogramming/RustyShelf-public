@@ -52,6 +52,8 @@ impl SearchQuery {
         for installation in &game.installations {
             searchable.push(' ');
             searchable.push_str(installation.launcher.label());
+            searchable.push(' ');
+            searchable.push_str(&installation.path.to_string_lossy());
         }
         let searchable = normalize_search(&searchable);
         self.terms.iter().all(|term| searchable.contains(term))
@@ -108,6 +110,24 @@ impl Filters {
 mod tests {
     use super::*;
     use crate::model::Installation;
+
+    #[test]
+    fn search_can_find_an_installation_by_drive_or_unicode_folder() {
+        let game = Game::from_installation(
+            "Adventure",
+            "Jeux",
+            Installation {
+                path: "D:/Archives/Été/Game".into(),
+                launcher: Launcher::Manual,
+                launch_profile: None,
+                available: false,
+            },
+        );
+        let filters = Filters::default();
+        assert!(filters.matches(&game, &SearchQuery::new("D: ete adventure"), None));
+        assert!(filters.matches(&game, &SearchQuery::new("archives"), None));
+        assert!(!filters.matches(&game, &SearchQuery::new("E:"), None));
+    }
 
     #[test]
     fn availability_is_evaluated_for_the_selected_launcher() {
