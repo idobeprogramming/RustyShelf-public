@@ -9,9 +9,15 @@ cargo build --release
 if ($LASTEXITCODE -ne 0) {
     throw 'La compilation a échoué. Aucun paquet ne sera créé.'
 }
+$metadataJson = cargo metadata --no-deps --format-version 1
+if ($LASTEXITCODE -ne 0) {
+    throw 'Impossible de localiser la compilation. Aucun paquet ne sera créé.'
+}
+$buildDirectory = ($metadataJson | ConvertFrom-Json).target_directory
+$binary = Join-Path $buildDirectory 'release\rustyshelf.exe'
 $stage = Join-Path $PSScriptRoot 'dist\RustyShelf-windows-x86_64'
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
-Copy-Item 'target\release\rustyshelf.exe' $stage -Force
+Copy-Item -LiteralPath $binary -Destination $stage -Force
 Copy-Item 'README.md' $stage -Force
 Copy-Item 'CUSTOM_STYLE.md' $stage -Force
 Copy-Item 'examples\rustyshelf.css' $stage -Force
