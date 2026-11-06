@@ -130,6 +130,11 @@ pub fn scan_roots(
     mut emit: impl FnMut(ScanEvent),
 ) {
     let mut visited = 0;
+    let windows_directory = if cfg!(windows) {
+        std::env::var_os("SystemRoot").map(PathBuf::from)
+    } else {
+        None
+    };
     for root in &unique_roots(roots) {
         if control.is_cancelled() {
             break;
@@ -141,17 +146,24 @@ pub fn scan_roots(
             ));
             continue;
         }
-        let walker = WalkDir::new(root)
+        let mut walker = WalkDir::new(root)
             .follow_links(false)
             .max_open(16)
-            .into_iter()
-            .filter_entry(|entry| should_descend(entry, exclusions));
-        for entry in walker {
-            if control.is_cancelled() {
+            .into_iter();
+        // Check cancellation even between excluded entries. filter_entry can
+        // otherwise consume many of them before returning control to this loop.
+        while !control.is_cancelled() {
+            let Some(entry) = walker.next() else {
                 break;
-            }
+            };
             match entry {
                 Ok(entry) => {
+                    if !should_descend(&entry, root, exclusions, windows_directory.as_deref()) {
+                        if entry.file_type().is_dir() {
+                            walker.skip_current_dir();
+                        }
+                        continue;
+                    }
                     visited += 1;
                     if visited % 128 == 0 {
                         emit(ScanEvent::Progress(ScanProgress {
@@ -221,7 +233,12 @@ pub fn scan_roots(
     });
 }
 
-fn should_descend(entry: &DirEntry, exclusions: &[PathBuf]) -> bool {
+fn should_descend(
+    entry: &DirEntry,
+    root: &Path,
+    exclusions: &[PathBuf],
+    windows_directory: Option<&Path>,
+) -> bool {
     let path = entry.path();
     if exclusions
         .iter()
@@ -232,25 +249,35 @@ fn should_descend(entry: &DirEntry, exclusions: &[PathBuf]) -> bool {
     if !entry.file_type().is_dir() {
         return true;
     }
-    #[cfg(target_os = "linux")]
-    if linux_system_path(path) {
+    if windows_directory.is_some_and(|system| path_is_within(path, system)) {
         return false;
+    }
+    #[cfg(target_os = "linux")]
+    if linux_path_excluded(path, root) {
+        return false;
+    }
+    // A folder explicitly chosen by the user may happen to be named "target"
+    // or "temp". User exclusions and protected system locations still apply.
+    if path == root {
+        return true;
     }
     let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
     !matches!(
         name.as_str(),
         "$recycle.bin"
             | "system volume information"
-            | "windows"
             | "node_modules"
             | ".git"
-            | "proc"
-            | "sys"
-            | "dev"
             | ".cache"
             | "target"
-            | "temp"
     )
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_path_excluded(path: &Path, root: &Path) -> bool {
+    // Broad drive scans skip system trees. A deliberately chosen subtree is
+    // still scannable (including temporary/import folders and /var/lib games).
+    linux_system_path(path) && !linux_system_path(root)
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -488,6 +515,69 @@ mod tests {
     use super::*;
     use std::{fs, sync::mpsc};
     use tempfile::tempdir;
+
+    #[test]
+    fn game_folders_named_like_system_directories_are_not_lost() {
+        let temp = tempdir().unwrap();
+        for name in ["Windows", "dev", "sys", "proc", "temp", "node_modules"] {
+            let folder = temp.path().join(name);
+            fs::create_dir(&folder).unwrap();
+            fs::write(
+                folder.join(format!("{name}.nes")),
+                b"NES\x1a\0\0\0\0\0\0\0\0\0\0\0\0",
+            )
+            .unwrap();
+        }
+        let collect = |root: PathBuf, exclusions: &[PathBuf]| {
+            let mut titles = Vec::new();
+            scan_roots(&[root], exclusions, &ScanControl::default(), |event| {
+                if let ScanEvent::Candidate(game) = event {
+                    titles.push(game.title);
+                }
+            });
+            titles.sort();
+            titles
+        };
+        assert_eq!(
+            collect(temp.path().to_owned(), &[]),
+            ["Windows", "dev", "proc", "sys", "temp"]
+        );
+        let chosen = temp.path().join("node_modules");
+        assert_eq!(collect(chosen.clone(), &[]), ["node_modules"]);
+        assert!(collect(chosen.clone(), &[chosen]).is_empty());
+    }
+
+    #[test]
+    fn real_windows_directory_is_excluded_without_hiding_other_windows_folders() {
+        let temp = tempdir().unwrap();
+        let system = temp.path().join("OperatingSystem");
+        let game = temp.path().join("Games/Windows");
+        fs::create_dir_all(&system).unwrap();
+        fs::create_dir_all(&game).unwrap();
+        for (folder, expected) in [(system.clone(), false), (game, true)] {
+            let entry = WalkDir::new(&folder).into_iter().next().unwrap().unwrap();
+            assert_eq!(
+                should_descend(&entry, temp.path(), &[], Some(&system)),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_linux_subtree_can_be_scanned_but_whole_drive_skips_system_paths() {
+        for path in [
+            "/tmp/import/roms",
+            "/var/lib/games",
+            "/run/user/1000/import",
+        ] {
+            assert!(linux_path_excluded(Path::new(path), Path::new("/")));
+            assert!(!linux_path_excluded(Path::new(path), Path::new(path)));
+        }
+        assert!(!linux_path_excluded(
+            Path::new("/run/media/user/Games/Windows"),
+            Path::new("/")
+        ));
+    }
 
     #[test]
     fn drive_choices_survive_disconnects_and_do_not_select_new_drives() {
