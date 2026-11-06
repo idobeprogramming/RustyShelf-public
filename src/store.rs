@@ -240,6 +240,7 @@ impl Store {
         let query = "SELECT game_id,path FROM installations JOIN games ON games.id=installations.game_id WHERE REPLACE(path,char(92),'/')=?1 COLLATE NOCASE ORDER BY confirmed DESC, favorite DESC LIMIT 1";
         #[cfg(not(windows))]
         let query = "SELECT game_id,path FROM installations JOIN games ON games.id=installations.game_id WHERE path=?1 ORDER BY confirmed DESC, favorite DESC LIMIT 1";
+        let mut identity_found = false;
         for installation in &mut game.installations {
             let path = installation.path.to_string_lossy().into_owned();
             #[cfg(windows)]
@@ -249,9 +250,13 @@ impl Store {
                 .query_row(query, [path], |row| Ok((row.get(0)?, row.get(1)?)))
                 .optional()?;
             if let Some((id, path)) = existing {
-                game.id = id;
-                installation.path = path.into();
-                break;
+                if !identity_found {
+                    game.id = id.clone();
+                    identity_found = true;
+                }
+                if game.id == id {
+                    installation.path = path.into();
+                }
             }
         }
         Ok(())
@@ -558,6 +563,37 @@ fn parse_launcher(value: &str) -> Launcher {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn every_installation_path_reuses_its_stored_spelling() {
+        let temp = tempdir().unwrap();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        let mut game = Game::from_installation(
+            "Game",
+            "Steam",
+            Installation {
+                path: temp.path().join("Games/First"),
+                launcher: Launcher::Steam,
+                launch_profile: None,
+                available: true,
+            },
+        );
+        game.installations.push(Installation {
+            path: temp.path().join("Games/Second"),
+            ..game.installations[0].clone()
+        });
+        store.save_game(&game).unwrap();
+        let mut scanned = game.clone();
+        #[cfg(windows)]
+        {
+            scanned.installations[0].path = temp.path().join("games/first");
+            scanned.installations[1].path = temp.path().join("games/second");
+        }
+        store.reuse_installation_identity(&mut scanned).unwrap();
+        assert_eq!(scanned.installations, game.installations);
+        store.save_game(&scanned).unwrap();
+        assert_eq!(store.games().unwrap()[0].installations.len(), 2);
+    }
 
     #[test]
     fn manual_readdition_does_not_replace_an_official_launcher_profile() {
