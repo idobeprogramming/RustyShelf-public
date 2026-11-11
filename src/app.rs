@@ -756,6 +756,15 @@ impl RustyShelfApp {
         let (sender, receiver) = mpsc::sync_channel(64);
         std::thread::spawn(move || {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let cover_roots = if include_launcher_catalogs {
+                    sources::steam_cache_roots()
+                } else {
+                    Vec::new()
+                };
+                let emit_candidate = |mut game: Game| {
+                    game.cover_path = crate::covers::find(&game, &cover_roots, &worker_control);
+                    sender.send(ScanEvent::Candidate(game)).is_ok()
+                };
                 let discovered = if include_launcher_catalogs {
                     sources::discover(&roots, &worker_control, &mut |event| {
                         if sender.send(event).is_err() {
@@ -776,12 +785,16 @@ impl RustyShelfApp {
                             .iter()
                             .map(|installation| installation.path.clone()),
                     );
-                    if sender.send(ScanEvent::Candidate(game)).is_err() {
+                    if !emit_candidate(game) {
                         return;
                     }
                 }
                 scan::scan_roots(&roots, &scan_exclusions, &worker_control, |event| {
-                    if sender.send(event).is_err() {
+                    let result = match event {
+                        ScanEvent::Candidate(game) => emit_candidate(game),
+                        event => sender.send(event).is_ok(),
+                    };
+                    if !result {
                         worker_control.cancel();
                     }
                 });
@@ -1015,6 +1028,7 @@ impl RustyShelfApp {
                 available: true,
             },
         );
+        game.cover_path = crate::covers::find(&game, &[], &ScanControl::default());
         if self.update_library(|store| store.save_manual_game(&mut game)) {
             self.selected_game = Some(game.id);
             self.status = tr(
@@ -3126,6 +3140,8 @@ mod tests {
             b"NES\x1a\0\0\0\0\0\0\0\0\0\0\0\0",
         )
         .unwrap();
+        let cover = chosen.join("Étoiles.png");
+        image::RgbaImage::new(12, 8).save(&cover).unwrap();
         let mut app = test_app();
         let outside = app.games[0].clone();
         let store = Store::open(temp.path().join("library.db")).unwrap();
@@ -3150,6 +3166,25 @@ mod tests {
             .games
             .iter()
             .any(|game| game.title == "Étoiles" && !game.confirmed));
+        let found = app
+            .games
+            .iter()
+            .find(|game| game.title == "Étoiles")
+            .unwrap();
+        assert_eq!(found.cover_path.as_ref(), Some(&cover));
+        assert_eq!(
+            app.store
+                .as_ref()
+                .unwrap()
+                .games()
+                .unwrap()
+                .iter()
+                .find(|game| game.id == found.id)
+                .unwrap()
+                .cover_path
+                .as_ref(),
+            Some(&cover)
+        );
         assert!(
             app.games
                 .iter()

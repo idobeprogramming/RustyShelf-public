@@ -8,6 +8,13 @@ use crate::model::Game;
 use crate::scan::{ScanControl, ScanEvent, ScanProgress};
 use std::path::{Path, PathBuf};
 
+pub fn steam_cache_roots() -> Vec<PathBuf> {
+    steam::default_steamapps()
+        .iter()
+        .filter_map(|path| path.parent().map(|root| root.join("appcache/librarycache")))
+        .collect()
+}
+
 pub fn read_manifest_text(path: &Path) -> Result<String, String> {
     use std::io::Read;
     const MAX_BYTES: u64 = 4 * 1024 * 1024;

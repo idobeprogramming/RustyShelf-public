@@ -183,7 +183,7 @@ fn quoted_tokens(text: &str) -> Result<Vec<String>, String> {
     Ok(tokens)
 }
 
-fn default_steamapps() -> Vec<PathBuf> {
+pub(super) fn default_steamapps() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(home) = dirs::home_dir() {
         paths.extend([

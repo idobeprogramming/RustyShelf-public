@@ -77,5 +77,6 @@ Une tâche à la fois : comprendre, modifier, vérifier les critères, puis cré
 71. [x] Détecter les cartouches 3DS par en-tête sans imposer le nom du dossier, y compris à l’ajout manuel.
 72. [x] Aligner les volumes à scanner à gauche des options.
 73. [x] Refaire Prisme avec transparence native, flou Windows, reflets et contrôles arrondis ; préserver l’opacité des autres thèmes.
+74. [x] Découvrir les jaquettes locales Steam et les images associées aux jeux/ROMs pendant le scan, sans remplacer les choix enregistrés.
 
 Critères : formatage, tests concernés, `cargo test`, Clippy sans avertissement. Chaque lot autonome produit un commit séparé. Le pipeline CI exécute ces contrôles et construit les deux paquets à chaque push ou pull request.
