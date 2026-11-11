@@ -75,5 +75,7 @@ Une tâche à la fois : comprendre, modifier, vérifier les critères, puis cré
 69. [x] Réutiliser l’écriture de tous les chemins d’installations correspondants lors d’un scan Windows.
 70. [x] Préserver le thème choisi face au thème système et corriger les titres illisibles.
 71. [x] Détecter les cartouches 3DS par en-tête sans imposer le nom du dossier, y compris à l’ajout manuel.
+72. [x] Aligner les volumes à scanner à gauche des options.
+73. [x] Refaire Prisme avec transparence native, flou Windows, reflets et contrôles arrondis ; préserver l’opacité des autres thèmes.
 
 Critères : formatage, tests concernés, `cargo test`, Clippy sans avertissement. Chaque lot autonome produit un commit séparé. Le pipeline CI exécute ces contrôles et construit les deux paquets à chaque push ou pull request.

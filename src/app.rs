@@ -139,14 +139,43 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
             visuals.widgets.active.corner_radius = egui::CornerRadius::ZERO;
         }
         Theme::Prism => {
-            visuals.panel_fill = Color32::from_rgba_unmultiplied(20, 29, 49, 235);
-            visuals.window_fill = Color32::from_rgba_unmultiplied(36, 48, 70, 250);
-            visuals.widgets.noninteractive.bg_fill =
-                Color32::from_rgba_unmultiplied(66, 89, 125, 100);
-            visuals.widgets.inactive.bg_fill = Color32::from_rgba_unmultiplied(90, 114, 153, 115);
-            visuals.widgets.hovered.bg_fill = Color32::from_rgba_unmultiplied(130, 162, 213, 160);
-            visuals.widgets.active.bg_fill = Color32::from_rgba_unmultiplied(151, 180, 231, 190);
-            visuals.window_corner_radius = egui::CornerRadius::same(18);
+            visuals.panel_fill = Color32::from_rgba_unmultiplied(18, 24, 35, 82);
+            // Floating windows need stronger tint to keep the library below quiet.
+            visuals.window_fill = Color32::from_rgba_unmultiplied(30, 37, 48, 224);
+            visuals.window_stroke = egui::Stroke::new(1.0_f32, Color32::from_white_alpha(72));
+            visuals.extreme_bg_color = Color32::from_black_alpha(38);
+            visuals.faint_bg_color = Color32::from_white_alpha(12);
+            visuals.widgets.noninteractive.bg_fill = Color32::TRANSPARENT;
+            visuals.widgets.noninteractive.bg_stroke =
+                egui::Stroke::new(1.0_f32, Color32::from_white_alpha(28));
+            visuals.widgets.inactive.bg_fill = Color32::from_white_alpha(22);
+            visuals.widgets.inactive.weak_bg_fill = Color32::from_white_alpha(22);
+            visuals.widgets.inactive.bg_stroke =
+                egui::Stroke::new(1.0_f32, Color32::from_white_alpha(48));
+            visuals.widgets.hovered.bg_fill = Color32::from_white_alpha(40);
+            visuals.widgets.hovered.weak_bg_fill = Color32::from_white_alpha(40);
+            visuals.widgets.hovered.bg_stroke =
+                egui::Stroke::new(1.0_f32, Color32::from_white_alpha(110));
+            visuals.widgets.active.bg_fill = Color32::from_rgba_unmultiplied(144, 199, 255, 105);
+            visuals.widgets.active.weak_bg_fill = visuals.widgets.active.bg_fill;
+            visuals.widgets.open.bg_fill = Color32::from_rgba_unmultiplied(45, 55, 70, 240);
+            visuals.widgets.open.weak_bg_fill = visuals.widgets.open.bg_fill;
+            visuals.window_corner_radius = egui::CornerRadius::same(22);
+            visuals.menu_corner_radius = egui::CornerRadius::same(16);
+            for widget in [
+                &mut visuals.widgets.inactive,
+                &mut visuals.widgets.hovered,
+                &mut visuals.widgets.active,
+                &mut visuals.widgets.open,
+            ] {
+                widget.corner_radius = egui::CornerRadius::same(12);
+            }
+            visuals.window_shadow = egui::epaint::Shadow {
+                offset: [0, 12],
+                blur: 36,
+                spread: 2,
+                color: Color32::from_black_alpha(70),
+            };
         }
     }
     visuals.widgets.active.fg_stroke.color = crate::style::text_on(visuals.widgets.active.bg_fill);
@@ -226,6 +255,7 @@ pub struct RustyShelfApp {
     title_edit_id: Option<String>,
     language: Language,
     theme: Theme,
+    native_glass: Option<bool>,
     emulators: Vec<Emulator>,
     css_path: Option<PathBuf>,
     css_enabled: bool,
@@ -365,6 +395,7 @@ impl RustyShelfApp {
             title_edit_id: None,
             language,
             theme,
+            native_glass: None,
             emulators,
             css_path,
             css_enabled,
@@ -1234,7 +1265,11 @@ impl RustyShelfApp {
         let radius = self
             .active_style()
             .and_then(|style| style.radius)
-            .unwrap_or(if self.theme == Theme::Classic { 0 } else { 12 });
+            .unwrap_or(match self.theme {
+                Theme::Classic => 0,
+                Theme::Prism => 20,
+                _ => 12,
+            });
         let gap = self
             .active_style()
             .and_then(|style| style.gap)
@@ -1457,7 +1492,11 @@ impl RustyShelfApp {
                                     let selected = self.selected_game.as_deref() == Some(&game.id);
                                     let texture = self.load_cover(ctx, game);
                                     let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-                                    painter.rect_filled(rect, radius, card);
+                                    if self.theme == Theme::Prism {
+                                        crate::glass::surface(&painter, rect, radius, card);
+                                    } else {
+                                        painter.rect_filled(rect, radius, card);
+                                    }
                                     if selected || response.hovered() {
                                         painter.rect_stroke(
                                             rect,
@@ -2085,6 +2124,7 @@ impl RustyShelfApp {
                 }
                 let previous_theme = self.theme;
                 egui::ComboBox::from_label(tr(self.language, "Thème", "Theme"))
+                    .height(280.0)
                     .selected_text(self.theme.label(self.language))
                     .show_ui(ui, |ui| {
                         for theme in [
@@ -2364,7 +2404,7 @@ fn card_color(theme: Theme) -> Color32 {
         Theme::Breeze => Color32::from_rgb(229, 241, 251),
         Theme::Horizon => Color32::from_rgb(233, 241, 253),
         Theme::Classic => Color32::from_rgb(212, 208, 200),
-        Theme::Prism => Color32::from_rgba_unmultiplied(66, 85, 119, 120),
+        Theme::Prism => Color32::from_rgba_unmultiplied(35, 43, 56, 88),
     }
 }
 
@@ -2375,7 +2415,7 @@ fn theme_accent(theme: Theme) -> Color32 {
         Theme::Breeze => Color32::from_rgb(63, 134, 171),
         Theme::Horizon => Color32::from_rgb(49, 106, 197),
         Theme::Classic => Color32::from_rgb(0, 0, 128),
-        Theme::Prism => Color32::from_rgba_unmultiplied(112, 145, 199, 150),
+        Theme::Prism => Color32::from_rgb(174, 218, 255),
     }
 }
 
@@ -2386,7 +2426,7 @@ fn placeholder_color(theme: Theme) -> Color32 {
         Theme::Breeze => Color32::from_rgb(170, 204, 229),
         Theme::Horizon => Color32::from_rgb(190, 218, 250),
         Theme::Classic => Color32::from_rgb(192, 192, 192),
-        Theme::Prism => Color32::from_rgba_unmultiplied(121, 151, 198, 140),
+        Theme::Prism => Color32::from_rgba_unmultiplied(178, 205, 235, 24),
     }
 }
 
@@ -2511,7 +2551,31 @@ impl Drop for RustyShelfApp {
 }
 
 impl eframe::App for RustyShelfApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        if self.theme == Theme::Prism {
+            [0.0; 4]
+        } else {
+            visuals.panel_fill.to_opaque().to_normalized_gamma_f32()
+        }
+    }
+
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        let glass = self.theme == Theme::Prism;
+        if self.native_glass != Some(glass) {
+            if glass || self.native_glass == Some(true) {
+                if let Err(error) = crate::glass::set_native(frame, glass) {
+                    self.status = format!(
+                        "{} : {error}",
+                        tr(
+                            self.language,
+                            "Effet de flou indisponible sur ce bureau",
+                            "Backdrop blur is unavailable on this desktop"
+                        )
+                    );
+                }
+            }
+            self.native_glass = Some(glass);
+        }
         self.handle_shortcuts(ctx);
         self.poll_scan(ctx);
         self.sidebar(ctx);
@@ -2528,6 +2592,30 @@ impl eframe::App for RustyShelfApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prism_transparency_does_not_leak_into_other_themes() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        app.css_enabled = false;
+        for theme in [Theme::Prism, Theme::Dark, Theme::Prism, Theme::Light] {
+            app.theme = theme;
+            app.refresh_appearance(&ctx);
+            let visuals = &ctx.style().visuals;
+            let alpha = eframe::App::clear_color(&app, visuals)[3];
+            if theme == Theme::Prism {
+                assert_eq!(alpha, 0.0, "The native backdrop must reach the content");
+                assert!(visuals.panel_fill.a() < 128);
+                assert!(visuals.window_fill.a() < 255);
+                assert!(card_color(theme).a() < 128);
+            } else {
+                assert_eq!(
+                    alpha, 1.0,
+                    "Other themes must stay opaque after leaving Prisme"
+                );
+            }
+        }
+    }
 
     #[test]
     fn chosen_theme_survives_system_theme_changes() {
@@ -2877,6 +2965,7 @@ mod tests {
             title_edit: String::new(),
             title_edit_id: None,
             theme: Theme::Dark,
+            native_glass: None,
             emulators: vec![],
             css_path: None,
             css_enabled: true,

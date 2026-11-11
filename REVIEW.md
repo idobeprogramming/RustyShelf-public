@@ -169,3 +169,12 @@ Validation de ce lot : **94 tests**, formatage et Clippy passent, fichiers et ba
 - Les tests couvrent les fichiers absents, les en-têtes tronqués, les noms Unicode, les extensions majuscules, le parcours réel de dossiers temporaires et l’ajout manuel sans profil de lancement direct. Les cartouches acceptées conservent leur console hors ligne, sans relire leur en-tête à chaque affichage.
 
 Validation : **99 tests**, formatage et Clippy passent sous Windows. Aucun jeu réel lancé, aucune dépendance ajoutée. L’avertissement de liens physiques du cache de compilation sur X: persiste ; il n’est pas un avertissement du code. La validation graphique native CachyOS reste à effectuer.
+
+## Alignement des disques et verre Prisme
+
+- Les cases des volumes étaient centrées par leur allocation forcée sur toute la largeur. Elles suivent désormais l’alignement gauche du panneau, avec retour à la ligne des descriptions.
+- Prisme utilise désormais une fenêtre native transparente et un fond acrylique Windows via `window-vibrancy`, dépendance limitée à Windows. L’effet est activé ou retiré uniquement au changement de thème. Sous Linux, seule la transparence est demandée ; le compositeur décide du flou. Aucun appel réseau n’est ajouté à l’application.
+- Cartes avec reflets gradués dans leurs contours arrondis, bordures lumineuses, contrôles translucides et teintures plus fortes dans les options pour préserver la lecture. Les autres thèmes effacent le fond de façon opaque. La liste déroulante peut afficher les six thèmes sans masquer Prisme au bas de sa zone de défilement.
+- Contrôle natif Windows effectué : affichage Prisme, disques alignés, passage à Nocturne opaque puis retour à Prisme. La dernière inspection de fermeture a été interrompue par Échap ; elle ne constitue pas une validation supplémentaire. Aucun jeu lancé ni scan réel démarré.
+
+Validation : **101 tests** passent, avec deux nouveaux tests sur la géométrie des reflets et l’opacité lors des changements de thème. Formatage et Clippy passent. La transparence native reste dépendante du bureau ; aucun essai CachyOS n’est revendiqué. Référence de l’effet Windows et de ses limites sur les anciennes versions : [window-vibrancy / apply_acrylic](https://docs.rs/window-vibrancy/0.8.1/window_vibrancy/fn.apply_acrylic.html).
