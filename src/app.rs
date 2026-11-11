@@ -2164,9 +2164,7 @@ impl RustyShelfApp {
                     .max_height(220.0)
                     .show(ui, |ui| {
                         for (volume, selected) in self.volumes.iter().zip(&mut self.selected_volumes) {
-                            ui.add_sized(
-                                [ui.available_width(), 0.0],
-                                egui::Checkbox::new(
+                            ui.add(egui::Checkbox::new(
                                 selected,
                                 format!(
                                     "{}\n{}  ·  {}{}",
