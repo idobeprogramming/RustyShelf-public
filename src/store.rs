@@ -469,6 +469,14 @@ impl Store {
         Ok(())
     }
 
+    pub fn set_missing_cover(&self, id: &str, path: &std::path::Path) -> rusqlite::Result<bool> {
+        // The user may have selected a cover after the background search started.
+        self.connection.execute(
+            "UPDATE games SET cover_path=?2 WHERE id=?1 AND cover_path IS NULL AND NOT EXISTS(SELECT 1 FROM ignored_games WHERE game_id=?1)",
+            params![id, path.to_string_lossy()],
+        ).map(|changed| changed != 0)
+    }
+
     pub fn set_category(&self, id: &str, category: &str) -> rusqlite::Result<()> {
         self.connection.execute(
             "UPDATE games SET category=?2, category_custom=1 WHERE id=?1",

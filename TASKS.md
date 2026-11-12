@@ -78,5 +78,6 @@ Une tâche à la fois : comprendre, modifier, vérifier les critères, puis cré
 72. [x] Aligner les volumes à scanner à gauche des options.
 73. [x] Refaire Prisme avec transparence native, flou Windows, reflets et contrôles arrondis ; préserver l’opacité des autres thèmes.
 74. [x] Découvrir les jaquettes locales Steam et les images associées aux jeux/ROMs pendant le scan, sans remplacer les choix enregistrés.
+75. [x] Rechercher les jaquettes manquantes à la demande en arrière-plan, sans scan complet et avec annulation.
 
 Critères : formatage, tests concernés, `cargo test`, Clippy sans avertissement. Chaque lot autonome produit un commit séparé. Le pipeline CI exécute ces contrôles et construit les deux paquets à chaque push ou pull request.

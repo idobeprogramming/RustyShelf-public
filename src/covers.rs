@@ -4,6 +4,56 @@ use crate::{
 };
 use std::path::{Path, PathBuf};
 
+pub enum RefreshEvent {
+    Found(String, PathBuf),
+    Finished,
+}
+
+pub struct Refresh {
+    pub receiver: std::sync::mpsc::Receiver<RefreshEvent>,
+    control: ScanControl,
+    pub saved: usize,
+    pub errors: usize,
+    pub last_error: Option<String>,
+}
+
+impl Refresh {
+    pub fn start(games: Vec<Game>, roots: Vec<PathBuf>) -> Self {
+        let control = ScanControl::default();
+        let worker_control = control.clone();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(32);
+        std::thread::spawn(move || {
+            for game in games {
+                if worker_control.is_cancelled() {
+                    break;
+                }
+                if game.cover_path.is_some() {
+                    continue;
+                }
+                if let Some(path) = find(&game, &roots, &worker_control) {
+                    if sender.send(RefreshEvent::Found(game.id, path)).is_err() {
+                        return;
+                    }
+                }
+            }
+            let _ = sender.send(RefreshEvent::Finished);
+        });
+        Self {
+            receiver,
+            control,
+            saved: 0,
+            errors: 0,
+            last_error: None,
+        }
+    }
+}
+
+impl Drop for Refresh {
+    fn drop(&mut self) {
+        self.control.cancel();
+    }
+}
+
 const EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "bmp", "ico"];
 const STEAM_IMAGES: &[&str] = &[
     "library_header",
@@ -171,6 +221,14 @@ fn usable_image(path: &Path) -> bool {
 mod tests {
     use super::*;
     use crate::model::{Installation, LaunchProfile};
+
+    #[test]
+    fn dropping_a_cover_refresh_cancels_the_worker() {
+        let job = Refresh::start(Vec::new(), Vec::new());
+        let control = job.control.clone();
+        drop(job);
+        assert!(control.is_cancelled());
+    }
 
     fn png(path: &Path) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

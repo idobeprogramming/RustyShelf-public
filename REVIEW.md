@@ -189,3 +189,11 @@ La revue a confirmé que l’affichage et le remplacement manuel existaient, mai
 - Vérification de l’en-tête, dimensions maximales de 4096 × 4096 et taille maximale de 32 Mo. Le décodage complet conserve les limites du chargeur existant ; l’en-tête ne prouve pas l’intégrité complète d’une image. Les chemins déjà enregistrés restent prioritaires via la sauvegarde existante, y compris hors ligne.
 
 Validation : **104 tests**, formatage et Clippy passent sous Windows. Les tests ajoutés utilisent uniquement des fichiers temporaires : séparation des identifiants Steam, cache imbriqué, bibliothèque personnalisée, priorité des formats, image invalide, dimensions/taille excessives, annulation et choix manuel inaccessible. Le test de scan de dossier vérifie également la persistance de l’image trouvée. Aucune dépendance ni requête réseau ajoutée. Les caches Epic/Heroic/Lutris spécifiques ne sont pas encore lus ; leurs images placées dans les dossiers de jeux peuvent être trouvées.
+
+## Rechargement des jaquettes sans scan complet
+
+Le bouton des options ne se limite plus à vider les textures : il cherche les jaquettes manquantes des jeux déjà présents dans un travailleur séparé. Canal borné à 32 résultats, traitement limité à huit événements par affichage, annulation et arrêt à la fermeture. Aucun nouveau parcours des disques pour détecter des jeux. Les images déjà enregistrées sont simplement rechargées.
+
+La sauvegarde utilise une mise à jour conditionnelle : une image choisie manuellement ou un jeu ignoré après le début de la recherche reste protégé. Un test couvre ces deux changements pendant la recherche et vérifie la sauvegarde du seul résultat encore admissible, sans démarrer le scanner. Un autre vérifie l’annulation lorsque la tâche est abandonnée. Le bilan affiche le nombre d’images ajoutées, les erreurs et la dernière cause éventuelle.
+
+Validation : **106 tests**, formatage et Clippy passent sous Windows. Les fichiers et bases des tests sont temporaires ; aucun jeu lancé ni nouvelle dépendance ajoutée.

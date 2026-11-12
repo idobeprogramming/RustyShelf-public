@@ -249,6 +249,7 @@ pub struct RustyShelfApp {
     scan_seen_paths: Vec<PathBuf>,
     diagnostics: ScanDiagnostics,
     cover_textures: HashMap<String, (PathBuf, Option<TextureHandle>)>,
+    cover_refresh: Option<crate::covers::Refresh>,
     category_edit: String,
     category_edit_id: Option<String>,
     title_edit: String,
@@ -389,6 +390,7 @@ impl RustyShelfApp {
             scan_seen_paths: Vec::new(),
             diagnostics,
             cover_textures: HashMap::new(),
+            cover_refresh: None,
             category_edit: String::new(),
             category_edit_id: None,
             title_edit: String::new(),
@@ -2085,6 +2087,104 @@ impl RustyShelfApp {
         }
     }
 
+    fn refresh_covers(&mut self) {
+        self.cover_textures.clear();
+        if self.cover_refresh.is_some() {
+            return;
+        }
+        if self.store.is_none() {
+            self.persist(|_| Ok(()));
+            return;
+        }
+        self.cover_refresh = Some(crate::covers::Refresh::start(
+            self.games
+                .iter()
+                .filter(|game| game.cover_path.is_none())
+                .cloned()
+                .collect(),
+            sources::steam_cache_roots(),
+        ));
+        self.status = tr(
+            self.language,
+            "Recherche des jaquettes locales…",
+            "Searching local covers…",
+        )
+        .into();
+    }
+
+    fn poll_covers(&mut self, ctx: &egui::Context) {
+        let Some(job) = &mut self.cover_refresh else {
+            return;
+        };
+        let mut finished = false;
+        for _ in 0..8 {
+            match job.receiver.try_recv() {
+                Ok(crate::covers::RefreshEvent::Found(id, path)) => {
+                    let Some(store) = &self.store else {
+                        job.errors += 1;
+                        job.last_error = Some(
+                            tr(
+                                self.language,
+                                "Base locale indisponible",
+                                "Local database unavailable",
+                            )
+                            .into(),
+                        );
+                        continue;
+                    };
+                    match store.set_missing_cover(&id, &path) {
+                        Ok(true) => {
+                            job.saved += 1;
+                            if let Some(game) = self.games.iter_mut().find(|game| game.id == id) {
+                                game.cover_path = Some(path);
+                            }
+                            self.cover_textures.remove(&id);
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            job.errors += 1;
+                            self.status = error.to_string();
+                            job.last_error = Some(error.to_string());
+                        }
+                    }
+                }
+                Ok(crate::covers::RefreshEvent::Finished) => {
+                    finished = true;
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    job.errors += 1;
+                    job.last_error = Some(
+                        tr(
+                            self.language,
+                            "La recherche de jaquettes s’est arrêtée sans terminer",
+                            "Cover search stopped before completing",
+                        )
+                        .into(),
+                    );
+                    finished = true;
+                    break;
+                }
+            }
+        }
+        if finished {
+            self.status = format!(
+                "{} {} · {} {}",
+                job.saved,
+                tr(self.language, "jaquette(s) ajoutée(s)", "cover(s) added"),
+                job.errors,
+                tr(self.language, "erreur(s)", "error(s)")
+            );
+            if let Some(error) = &job.last_error {
+                self.status.push_str(&format!(" · {error}"));
+            }
+            self.cover_refresh = None;
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+    }
+
     fn load_cover(&mut self, ctx: &egui::Context, game: &Game) -> Option<TextureHandle> {
         let path = game.cover_path.as_ref()?;
         if let Some((cached_path, texture)) = self.cover_textures.get(&game.id) {
@@ -2120,8 +2220,18 @@ impl RustyShelfApp {
             .vscroll(true)
             .show(ctx, |ui| {
                 ui.heading(tr(self.language, "Apparence et langue", "Appearance and language"));
-                if ui.button(tr(self.language, "Recharger les vignettes locales", "Reload local covers")).clicked() {
-                    self.cover_textures.clear();
+                if ui.add_enabled(self.cover_refresh.is_none(), egui::Button::new(tr(self.language, "Recharger les vignettes locales", "Reload local covers"))).clicked() {
+                    self.refresh_covers();
+                }
+                if self.cover_refresh.is_some() {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(tr(self.language, "Recherche locale des jaquettes manquantes…", "Searching locally for missing covers…"));
+                        if ui.button(tr(self.language, "Annuler", "Cancel")).clicked() {
+                            self.cover_refresh = None;
+                            self.status = tr(self.language, "Recherche de jaquettes interrompue.", "Cover search cancelled.").into();
+                        }
+                    });
                 }
                 let previous_language = self.language;
                 egui::ComboBox::from_label(tr(self.language, "Langue", "Language"))
@@ -2592,6 +2702,7 @@ impl eframe::App for RustyShelfApp {
         }
         self.handle_shortcuts(ctx);
         self.poll_scan(ctx);
+        self.poll_covers(ctx);
         self.sidebar(ctx);
         self.content(ctx);
         if self.show_options {
@@ -2973,6 +3084,7 @@ mod tests {
             scan_seen_paths: vec![],
             diagnostics: ScanDiagnostics::default(),
             cover_textures: HashMap::new(),
+            cover_refresh: None,
             category_edit: String::new(),
             category_edit_id: None,
             language: Language::French,
@@ -3109,6 +3221,72 @@ mod tests {
         app.apply_review_selection(ReviewAction::Ignore);
         assert_eq!(app.games.len(), 1);
         assert!(app.games[0].confirmed);
+    }
+
+    #[test]
+    fn cover_refresh_saves_missing_images_without_overwriting_new_manual_choices() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = test_app();
+        app.games.clear();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        for title in ["Étoiles", "Manual", "Ignored"] {
+            let folder = temp.path().join(title);
+            std::fs::create_dir(&folder).unwrap();
+            image::RgbaImage::new(12, 8)
+                .save(folder.join("cover.png"))
+                .unwrap();
+            let game = Game::from_installation(
+                title,
+                "Ajout manuel",
+                Installation {
+                    path: folder,
+                    launcher: Launcher::Manual,
+                    launch_profile: None,
+                    available: true,
+                },
+            );
+            store.save_game(&game).unwrap();
+            app.games.push(game);
+        }
+        let manual_id = app.games[1].id.clone();
+        let ignored_id = app.games[2].id.clone();
+        app.store = Some(store);
+        app.refresh_covers();
+        assert!(
+            app.scan_control.is_none(),
+            "Cover reload must not start a drive scan"
+        );
+        let chosen = temp.path().join("unplugged/chosen.png");
+        assert!(app.update_library(|store| {
+            store.set_cover(&manual_id, Some(&chosen))?;
+            store.ignore_game(&ignored_id)
+        }));
+        let ctx = egui::Context::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.cover_refresh.is_some() {
+            assert!(std::time::Instant::now() < deadline);
+            app.poll_covers(&ctx);
+            std::thread::yield_now();
+        }
+        let games = app.store.as_ref().unwrap().games().unwrap();
+        assert_eq!(games.len(), 2);
+        assert_eq!(
+            games
+                .iter()
+                .find(|game| game.id == manual_id)
+                .unwrap()
+                .cover_path
+                .as_ref(),
+            Some(&chosen)
+        );
+        let automatic = games.iter().find(|game| game.title == "Étoiles").unwrap();
+        assert_eq!(
+            automatic.cover_path.as_ref(),
+            Some(&temp.path().join("Étoiles/cover.png"))
+        );
+        assert!(app
+            .status
+            .starts_with("1 jaquette(s) ajoutée(s) · 0 erreur(s)"));
     }
 
     #[test]
