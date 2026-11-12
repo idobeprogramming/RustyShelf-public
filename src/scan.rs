@@ -322,6 +322,9 @@ fn is_candidate_executable(path: &Path) -> bool {
 }
 
 fn candidate_from_executable(path: &Path) -> Option<Game> {
+    if support_path(path) {
+        return None;
+    }
     let is_desktop = path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -469,10 +472,41 @@ fn has_game_assets(executable: &Path) -> bool {
         || folder.join("data.win").is_file()
         || folder.join("renpy").is_dir()
         || folder.join("www/data/System.json").is_file()
-        || folder
-            .ancestors()
-            .take(4)
-            .any(|parent| parent.join("Content/Paks").is_dir())
+        || folder.ancestors().take(4).any(|project| {
+            if !project.join("Content/Paks").is_dir() {
+                return false;
+            }
+            folder == project
+                || folder.strip_prefix(project).is_ok_and(|relative| {
+                    relative.components().next().is_some_and(|component| {
+                        component.as_os_str().eq_ignore_ascii_case("Binaries")
+                    })
+                })
+        })
+}
+
+fn support_path(path: &Path) -> bool {
+    path.ancestors().take(6).any(|folder| {
+        folder.file_name().is_some_and(|name| {
+            matches!(
+                name.to_string_lossy().to_ascii_lowercase().as_str(),
+                "_commonredist"
+                    | "_redist"
+                    | "redist"
+                    | "redistributables"
+                    | "__installer"
+                    | "runtimes"
+            )
+        })
+    }) || path.ancestors().any(|folder| {
+        folder
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("Binaries"))
+            && folder
+                .parent()
+                .and_then(Path::file_name)
+                .is_some_and(|name| name.eq_ignore_ascii_case("Engine"))
+    })
 }
 
 pub(crate) fn looks_like_game(name: &str) -> bool {
@@ -489,10 +523,18 @@ pub(crate) fn looks_like_game(name: &str) -> bool {
             "unrealcefsubprocess",
             "easyanticheat",
             "redistributable",
+            "vcredist",
+            "cefsharp.browsersubprocess",
+            "crashpad_handler",
+            "bugsplathd",
+            "bssndrpt",
         ]
         .iter()
         .any(|skip| lowered.contains(skip))
     {
+        return false;
+    }
+    if lowered.ends_with("installer") || lowered.ends_with("updater") {
         return false;
     }
     !matches!(
@@ -503,6 +545,18 @@ pub(crate) fn looks_like_game(name: &str) -> bool {
             | "7za"
             | "7z"
             | "7zfm"
+            | "7zg"
+            | "python"
+            | "pythonw"
+            | "unrealpak"
+            | "shadercompileworker"
+            | "dxsetup"
+            | "oalinst"
+            | "quicksfv"
+            | "driver version checker"
+            | "driverversionchecker"
+            | "layerschecker"
+            | "wowerror"
             | "launcher"
             | "updater"
             | "helper"
@@ -515,6 +569,45 @@ mod tests {
     use super::*;
     use std::{fs, sync::mpsc};
     use tempfile::tempdir;
+
+    #[test]
+    fn engine_assets_do_not_turn_support_tools_into_games() {
+        let temp = tempdir().unwrap();
+        let game = temp.path().join("Adventure");
+        fs::create_dir_all(game.join("Content/Paks")).unwrap();
+        for relative in [
+            "Binaries/Win64/Adventure-Win64-Shipping.exe",
+            "Engine/Binaries/Win64/UnrealPak.exe",
+            "Binaries/Win64/CefSharp.BrowserSubprocess.exe",
+            "Binaries/Win64/BugSplatHD64.exe",
+            "_CommonRedist/DirectX/DXSETUP.exe",
+        ] {
+            let path = game.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, []).unwrap();
+            assert_eq!(
+                candidate_from_executable(&path).is_some(),
+                relative.contains("Adventure-Win64"),
+                "{relative}"
+            );
+        }
+        fs::write(game.join("data.win"), []).unwrap();
+        for name in [
+            "python",
+            "pythonw",
+            "crashpad_handler",
+            "BsSndRpt64",
+            "vcredist_x86",
+            "BBEnhancedInstaller",
+            "7zG",
+            "oalinst",
+        ] {
+            let path = game.join(format!("{name}.exe"));
+            fs::write(&path, []).unwrap();
+            assert!(candidate_from_executable(&path).is_none(), "{name}");
+        }
+        assert!(candidate_from_executable(&game.join("Adventure.exe")).is_some());
+    }
 
     #[test]
     fn game_folders_named_like_system_directories_are_not_lost() {
