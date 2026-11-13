@@ -108,47 +108,24 @@ fn has_signature(path: &Path, offset: u64, expected: &[u8]) -> bool {
         && signature == expected
 }
 
-fn has_cartridge_header(path: &Path, n64: bool) -> bool {
-    use std::io::Read;
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return false;
-    };
-    let mut header = [0u8; 64];
-    let length = if n64 { 64 } else { 16 };
-    if file.read_exact(&mut header[..length]).is_err() {
-        return false;
-    }
-    if n64 {
-        // Accept all three byte orders, regardless of the filename extension.
-        matches!(
-            header[..4],
-            [0x80, 0x37, 0x12, 0x40] | [0x37, 0x80, 0x40, 0x12] | [0x40, 0x12, 0x37, 0x80]
-        )
-    } else {
-        header.starts_with(b"NES\x1a")
-    }
-}
-
 /// Discovery is stricter than classification of an already accepted/offline game.
 /// In particular, .cso shaders, .gen generated files and .mdf databases are common.
 pub fn scan_candidate(path: &Path) -> bool {
+    match checked_header(path) {
+        Ok(Some(valid)) => return valid,
+        Err(_) => return false,
+        Ok(None) => {}
+    }
     let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
         return false;
     };
     match extension.to_ascii_lowercase().as_str() {
-        "3ds" | "cci" => has_ncsd_header(path),
-        "nes" => has_cartridge_header(path, false),
-        "n64" | "z64" | "v64" => has_cartridge_header(path, true),
-        "gen" | "md" => has_sega_header(path),
-        "cso" => has_signature(path, 0, b"CISO"),
-        "chd" => has_signature(path, 0, b"MComprHD"),
-        "pbp" => has_signature(path, 0, b"\0PBP"),
         "mdf" => {
             in_rom_folder(path)
                 && (path.with_extension("mds").is_file() || path.with_extension("MDS").is_file())
         }
         // These formats lack the checks above: require an explicit ROM collection.
-        "smd" | "cdi" | "nrg" | "cue" => in_rom_folder(path),
+        "cdi" | "nrg" | "cue" => in_rom_folder(path),
         "iso" => in_rom_folder(path),
         _ => console(path).is_some(),
     }
@@ -157,6 +134,12 @@ pub fn scan_candidate(path: &Path) -> bool {
 /// Only reject an old entry when a local file was actually readable and its
 /// known header is invalid. An offline or inaccessible file is inconclusive.
 pub fn invalid_existing_header(path: &Path) -> bool {
+    matches!(checked_header(path), Ok(Some(false)))
+}
+
+// Share one bounded check between discovery and legacy cleanup. None means an
+// unchecked format; an IO error is inconclusive for a previously saved game.
+fn checked_header(path: &Path) -> std::io::Result<Option<bool>> {
     use std::io::Read;
     let extension = path
         .extension()
@@ -170,19 +153,28 @@ pub fn invalid_existing_header(path: &Path) -> bool {
         "gen" | "md" => 260,
         "cso" | "pbp" => 4,
         "chd" => 8,
-        _ => return false,
+        "smd" => 0x4200,
+        "rvz" => 0x48,
+        "gcz" => 32,
+        "wbfs" => 512,
+        _ => return Ok(None),
     };
-    let Ok(file) = std::fs::File::open(path) else {
-        return false;
-    };
+    let file = std::fs::File::open(path)?;
     let mut header = Vec::new();
-    if file.take(minimum).read_to_end(&mut header).is_err() {
-        return false;
+    file.take(minimum).read_to_end(&mut header)?;
+    if extension == "smd" {
+        // Accept raw dumps mislabeled .smd as well as interleaved 16 KiB blocks
+        // after the 512-byte copier header. Only inspect the SEGA system ID.
+        return Ok(Some(
+            header.get(0x100..0x104) == Some(b"SEGA")
+                || (header.len() == 0x4200
+                    && [header[0x2280], header[0x280], header[0x2281], header[0x281]] == *b"SEGA"),
+        ));
     }
     if header.len() < minimum as usize {
-        return true;
+        return Ok(Some(false));
     }
-    !match extension.as_str() {
+    Ok(Some(match extension.as_str() {
         "nes" => header.starts_with(b"NES\x1a"),
         "n64" | "z64" | "v64" => matches!(
             header[..4],
@@ -193,8 +185,11 @@ pub fn invalid_existing_header(path: &Path) -> bool {
         "cso" => header.starts_with(b"CISO"),
         "chd" => header.starts_with(b"MComprHD"),
         "pbp" => header.starts_with(b"\0PBP"),
+        "rvz" => header.starts_with(b"RVZ\x01"),
+        "gcz" => header.starts_with(&[0x01, 0xc0, 0x0b, 0xb1]),
+        "wbfs" => header.starts_with(b"WBFS"),
         _ => unreachable!(),
-    }
+    }))
 }
 
 fn in_rom_folder(path: &Path) -> bool {
@@ -241,6 +236,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn smd_detection_uses_cartridge_content_instead_of_rom_folder_names() {
+        let temp = tempfile::tempdir().unwrap();
+        for folder in [
+            temp.path().join("roms"),
+            temp.path().join("XboxGames/Minecraft"),
+        ] {
+            std::fs::create_dir_all(&folder).unwrap();
+            let path = folder.join("Étoiles.SMD");
+            for bytes in [b"version 1\nnodes\nend\n".to_vec(), vec![0; 0x4200]] {
+                std::fs::write(&path, bytes).unwrap();
+                assert!(!scan_candidate(&path));
+                assert!(invalid_existing_header(&path));
+            }
+            let mut raw = vec![0; 0x4000];
+            raw[0x100..0x110].copy_from_slice(b"SEGA MEGA DRIVE ");
+            let mut interleaved = vec![0; 512];
+            interleaved.extend(raw.iter().skip(1).step_by(2));
+            interleaved.extend(raw.iter().step_by(2));
+            for bytes in [&raw, &interleaved] {
+                std::fs::write(&path, bytes).unwrap();
+                assert!(scan_candidate(&path));
+                assert!(!invalid_existing_header(&path));
+            }
+            std::fs::write(&path, &interleaved[..0x4200 - 1]).unwrap();
+            assert!(!scan_candidate(&path), "truncated first block");
+            std::fs::remove_file(&path).unwrap();
+            assert!(!scan_candidate(&path));
+            assert!(
+                !invalid_existing_header(&path),
+                "offline file is inconclusive"
+            );
+            assert_eq!(console(&path), Some("Mega Drive"));
+        }
+    }
+
+    #[test]
     fn legacy_header_check_only_rejects_readable_invalid_known_formats() {
         let temp = tempfile::tempdir().unwrap();
         for (ext, size, offset, signature) in [
@@ -254,6 +285,9 @@ mod tests {
             ("cso", 4, 0, b"CISO"),
             ("chd", 8, 0, b"MComprHD"),
             ("pbp", 4, 0, b"\0PBP"),
+            ("RVZ", 0x48, 0, b"RVZ\x01"),
+            ("gcz", 32, 0, &[0x01, 0xc0, 0x0b, 0xb1]),
+            ("wbfs", 512, 0, b"WBFS"),
         ] {
             let path = temp.path().join(format!("Étoiles.{ext}"));
             assert!(!invalid_existing_header(&path), "missing {ext}");
@@ -262,9 +296,13 @@ mod tests {
             let mut bytes = vec![0; size];
             std::fs::write(&path, &bytes).unwrap();
             assert!(invalid_existing_header(&path), "invalid {ext}");
+            assert!(!scan_candidate(&path), "invalid discovery {ext}");
             bytes[offset..offset + signature.len()].copy_from_slice(signature);
+            std::fs::write(&path, &bytes[..size - 1]).unwrap();
+            assert!(!scan_candidate(&path), "truncated discovery {ext}");
             std::fs::write(&path, &bytes).unwrap();
             assert!(!invalid_existing_header(&path), "valid {ext}");
+            assert!(scan_candidate(&path), "valid discovery {ext}");
         }
         let iso = temp.path().join("Unknown.iso");
         std::fs::write(&iso, []).unwrap();
@@ -392,7 +430,7 @@ mod tests {
         assert!(scan_candidate(&roms.join("Database.mdf")));
         assert!(!scan_candidate(&apps.join("Database.mdf")));
         assert!(!scan_candidate(&apps.join("generated.smd")));
-        assert!(scan_candidate(&roms.join("Adventure.smd")));
+        assert!(!scan_candidate(&roms.join("Adventure.smd")));
         assert!(!scan_candidate(&temp.path().join("Games/Setup.iso")));
         assert!(scan_candidate(&roms.join("Adventure.iso")));
     }

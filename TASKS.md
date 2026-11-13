@@ -82,5 +82,6 @@ Une tâche à la fois : comprendre, modifier, vérifier les critères, puis cré
 76. [x] Écarter les outils auxiliaires et limiter la reconnaissance des exécutables Unreal au dossier du jeu et à ses binaires.
 77. [x] Revérifier les anciens candidats pendant le scan, masquer les faux positifs identifiés sans perdre les corrections, et afficher un bilan restaurable.
 78. [x] Reconnaître les composants Office, Visual Studio, SDKs, pilotes et navigateur par leur dossier d’installation, sans exclure les jeux portant un nom similaire.
+79. [x] Valider le contenu SMD, RVZ, GCZ et WBFS ; partager les contrôles entre découverte et nettoyage des anciens candidats.
 
 Critères : formatage, tests concernés, `cargo test`, Clippy sans avertissement. Chaque lot autonome produit un commit séparé. Le pipeline CI exécute ces contrôles et construit les deux paquets à chaque push ou pull request.

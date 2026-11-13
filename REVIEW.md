@@ -1,5 +1,15 @@
 # Revue du 5 novembre 2026
 
+## Renforcement complémentaire du scan — 13 novembre 2026
+
+La consultation en lecture seule du catalogue révèle encore des composants d’Office, Visual Studio, SDKs, pilotes AMD/Gigabyte et Brave dans « À confirmer ». Le scanner et le nettoyage des anciens candidats reconnaissent maintenant leurs dossiers d’installation directement sous Program Files. Un test vérifie aussi que les mêmes noms hors de ces dossiers et les jeux voisins restent admissibles. Ce premier lot passe 112 tests.
+
+Les fichiers `.smd` ne sont plus validés par le seul nom d’un dossier ROMs. La détection exige le marqueur SEGA dans une image brute ou dans le premier bloc entrelacé de 16 Kio précédé du préfixe de 512 octets. Les faux fichiers Xbox et les modèles 3D sont ainsi écartés, y compris parmi les anciens candidats non corrigés. Une vraie SMD peut maintenant être découverte hors d’un dossier ROMs. RVZ, GCZ et WBFS demandent leur signature et un en-tête complet. Découverte et nettoyage partagent désormais le même contrôle borné, sans décompression ni lecture intégrale d’image disque. Les fichiers inaccessibles ne sont pas invalidés et les protections des corrections utilisateur restent en place.
+
+Références de format : organisation SMD dans [Genesis Plus GX](https://github.com/ekeeke/Genesis-Plus-GX/blob/49c584764893b0505ac7f768a754f97330fa4392/core/loadrom.c), signatures et en-têtes [RVZ](https://github.com/dolphin-emu/dolphin/blob/master/Source/Core/DiscIO/WIABlob.h), [GCZ](https://github.com/dolphin-emu/dolphin/blob/master/Source/Core/DiscIO/CompressedBlob.h) et [WBFS](https://github.com/dolphin-emu/dolphin/blob/master/Source/Core/DiscIO/WbfsBlob.h) chez Dolphin. Implémentation limitée aux contrôles de format, sans reprise des routines d’émulation ni validation complète du contenu.
+
+Validation finale : **113 tests**, formatage et Clippy passent sous Windows. Les nouveaux cas couvrent les SMD brutes/entrelacées, les métadonnées non ROM, les préfixes tronqués, les chemins Unicode, les fichiers absents et les signatures des trois conteneurs compressés. Aucune modification directe de la base utilisateur ni lancement de jeu. La validation graphique Linux reste à effectuer.
+
 ## Correction des faux positifs — 13 novembre 2026
 
 La file « À confirmer » conservait les résultats permissifs des anciens scans. Les nouvelles règles seules ne les retiraient pas. Le scanner revérifie désormais ces candidats dans les racines choisies et masque les outils identifiés ainsi que les fichiers lisibles dont les signatures NES, N64, 3DS, SEGA, CSO, CHD ou PBP sont invalides. Cette étape reste en arrière-plan, annulable entre les candidats et utilise la file bornée du scanner.
