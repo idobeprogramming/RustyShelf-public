@@ -1,5 +1,15 @@
 # Revue du 5 novembre 2026
 
+## Correction des faux positifs — 13 novembre 2026
+
+La file « À confirmer » conservait les résultats permissifs des anciens scans. Les nouvelles règles seules ne les retiraient pas. Le scanner revérifie désormais ces candidats dans les racines choisies et masque les outils identifiés ainsi que les fichiers lisibles dont les signatures NES, N64, 3DS, SEGA, CSO, CHD ou PBP sont invalides. Cette étape reste en arrière-plan, annulable entre les candidats et utilise la file bornée du scanner.
+
+Les contrôles PC écartent les redistribuables, installateurs et sous-processus connus. La présence de fichiers Unreal ne valide plus les outils du moteur ni les exécutables de sous-dossiers quelconques. Les jeux autonomes incertains ne sont pas retirés simplement parce qu’aucun moteur connu n’est trouvé.
+
+Les corrections utilisateur sont vérifiées à nouveau lors de la sauvegarde. Jeux confirmés, favoris, ajouts manuels, titres, catégories, consoles et jaquettes personnalisés restent protégés. Les installations inaccessibles, exclues ou hors du scan sont conservées. Toutes les installations doivent être identifiées comme invalides pour masquer une fiche. Aucun fichier n’est supprimé ; les fiches restent restaurables dans les options. Le bilan du scan et son export comptent les candidats masqués.
+
+Validation : **111 tests**, formatage et Clippy passent sous Windows. Les régressions couvrent les outils proches de fichiers de jeu, les signatures valides/invalides/tronquées, les chemins Unicode, les installations multiples et débranchées, les exclusions, la restauration et les corrections faites pendant un scan. Les tests utilisent des fichiers temporaires et ne lancent aucun jeu. L’avertissement du cache Rust sur les liens physiques du disque X: subsiste ; aucun avertissement Clippy du code. Pas de validation graphique CachyOS pour ce lot.
+
 ## Problèmes corrigés
 
 - Presque tous les exécutables étaient considérés comme des candidats : la détection demande maintenant des fichiers de moteur de jeu. Les résultats incertains restent dans « À confirmer », avec un choix d’ignorance persistant et réversible.

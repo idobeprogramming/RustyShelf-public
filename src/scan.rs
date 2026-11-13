@@ -106,6 +106,7 @@ pub struct ScanProgress {
 #[derive(Clone, Debug)]
 pub enum ScanEvent {
     Candidate(Game),
+    RejectedCandidate(String),
     Error(PathBuf, String),
     Skipped(PathBuf, String),
     Progress(ScanProgress),
@@ -509,6 +510,44 @@ fn support_path(path: &Path) -> bool {
     })
 }
 
+pub fn obsolete_candidate(game: &Game, roots: &[PathBuf], exclusions: &[PathBuf]) -> bool {
+    !game.confirmed
+        && !game.favorite
+        && !game.installations.is_empty()
+        && game.installations.iter().all(|installation| {
+            let path = &installation.path;
+            if installation.launcher != Launcher::Unknown
+                || !roots.iter().any(|root| path_is_within(path, root))
+                || exclusions
+                    .iter()
+                    .any(|excluded| path_is_within(path, excluded))
+                || path.metadata().is_err()
+            {
+                return false;
+            }
+            if path.is_file() {
+                if crate::rom::invalid_existing_header(path) {
+                    return true;
+                }
+                if crate::rom::console(path).is_some() {
+                    return false;
+                }
+            }
+            let name = installation
+                .launch_profile
+                .as_ref()
+                .and_then(|profile| profile.command.file_stem())
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| game.title.clone());
+            !looks_like_game(&name)
+                || support_path(path)
+                || installation
+                    .launch_profile
+                    .as_ref()
+                    .is_some_and(|profile| support_path(&profile.command))
+        })
+}
+
 pub(crate) fn looks_like_game(name: &str) -> bool {
     let lowered = name.to_ascii_lowercase();
     if name.trim().is_empty()
@@ -569,6 +608,59 @@ mod tests {
     use super::*;
     use std::{fs, sync::mpsc};
     use tempfile::tempdir;
+
+    #[test]
+    fn old_candidates_are_rechecked_conservatively_within_scan_scope() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let mut game = Game::from_installation(
+            "vcredist_x64",
+            "À confirmer",
+            Installation {
+                path: root.clone(),
+                launcher: Launcher::Unknown,
+                launch_profile: None,
+                available: true,
+            },
+        );
+        assert!(obsolete_candidate(&game, std::slice::from_ref(&root), &[]));
+        assert!(!obsolete_candidate(&game, &[root.join("Other")], &[]));
+        assert!(!obsolete_candidate(
+            &game,
+            std::slice::from_ref(&root),
+            std::slice::from_ref(&root)
+        ));
+        game.confirmed = true;
+        assert!(!obsolete_candidate(&game, std::slice::from_ref(&root), &[]));
+        game.confirmed = false;
+        game.favorite = true;
+        assert!(!obsolete_candidate(&game, std::slice::from_ref(&root), &[]));
+        game.favorite = false;
+        game.installations[0].launcher = Launcher::Manual;
+        assert!(!obsolete_candidate(&game, std::slice::from_ref(&root), &[]));
+        game.installations[0].launcher = Launcher::Unknown;
+        game.installations.push(Installation {
+            path: root.join("unplugged"),
+            ..game.installations[0].clone()
+        });
+        assert!(!obsolete_candidate(&game, std::slice::from_ref(&root), &[]));
+        game.installations.pop();
+        game.title = "Adventure".into();
+        assert!(!obsolete_candidate(&game, std::slice::from_ref(&root), &[]));
+        let path = root.join("Database.gen");
+        fs::write(&path, b"not a ROM").unwrap();
+        game.installations[0].path = path;
+        assert!(obsolete_candidate(&game, std::slice::from_ref(&root), &[]));
+        game.installations.push(Installation {
+            path: root,
+            ..game.installations[0].clone()
+        });
+        assert!(!obsolete_candidate(
+            &game,
+            &[temp.path().to_path_buf()],
+            &[]
+        ));
+    }
 
     #[test]
     fn engine_assets_do_not_turn_support_tools_into_games() {

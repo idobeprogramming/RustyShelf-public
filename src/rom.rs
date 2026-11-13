@@ -154,6 +154,49 @@ pub fn scan_candidate(path: &Path) -> bool {
     }
 }
 
+/// Only reject an old entry when a local file was actually readable and its
+/// known header is invalid. An offline or inaccessible file is inconclusive.
+pub fn invalid_existing_header(path: &Path) -> bool {
+    use std::io::Read;
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let minimum = match extension.as_str() {
+        "nes" => 16,
+        "n64" | "z64" | "v64" => 64,
+        "3ds" | "cci" => 512,
+        "gen" | "md" => 260,
+        "cso" | "pbp" => 4,
+        "chd" => 8,
+        _ => return false,
+    };
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut header = Vec::new();
+    if file.take(minimum).read_to_end(&mut header).is_err() {
+        return false;
+    }
+    if header.len() < minimum as usize {
+        return true;
+    }
+    !match extension.as_str() {
+        "nes" => header.starts_with(b"NES\x1a"),
+        "n64" | "z64" | "v64" => matches!(
+            header[..4],
+            [0x80, 0x37, 0x12, 0x40] | [0x37, 0x80, 0x40, 0x12] | [0x40, 0x12, 0x37, 0x80]
+        ),
+        "3ds" | "cci" => &header[0x100..0x104] == b"NCSD",
+        "gen" | "md" => &header[0x100..0x104] == b"SEGA",
+        "cso" => header.starts_with(b"CISO"),
+        "chd" => header.starts_with(b"MComprHD"),
+        "pbp" => header.starts_with(b"\0PBP"),
+        _ => unreachable!(),
+    }
+}
+
 fn in_rom_folder(path: &Path) -> bool {
     path.ancestors().skip(1).any(|folder| {
         folder.file_name().is_some_and(|name| {
@@ -196,6 +239,37 @@ pub fn assignable_console(console: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_header_check_only_rejects_readable_invalid_known_formats() {
+        let temp = tempfile::tempdir().unwrap();
+        for (ext, size, offset, signature) in [
+            ("nes", 16, 0, b"NES\x1a".as_slice()),
+            ("z64", 64, 0, &[0x80, 0x37, 0x12, 0x40]),
+            ("v64", 64, 0, &[0x37, 0x80, 0x40, 0x12]),
+            ("n64", 64, 0, &[0x40, 0x12, 0x37, 0x80]),
+            ("3DS", 512, 256, b"NCSD"),
+            ("gen", 260, 256, b"SEGA"),
+            ("md", 260, 256, b"SEGA"),
+            ("cso", 4, 0, b"CISO"),
+            ("chd", 8, 0, b"MComprHD"),
+            ("pbp", 4, 0, b"\0PBP"),
+        ] {
+            let path = temp.path().join(format!("Étoiles.{ext}"));
+            assert!(!invalid_existing_header(&path), "missing {ext}");
+            std::fs::write(&path, []).unwrap();
+            assert!(invalid_existing_header(&path), "empty {ext}");
+            let mut bytes = vec![0; size];
+            std::fs::write(&path, &bytes).unwrap();
+            assert!(invalid_existing_header(&path), "invalid {ext}");
+            bytes[offset..offset + signature.len()].copy_from_slice(signature);
+            std::fs::write(&path, &bytes).unwrap();
+            assert!(!invalid_existing_header(&path), "valid {ext}");
+        }
+        let iso = temp.path().join("Unknown.iso");
+        std::fs::write(&iso, []).unwrap();
+        assert!(!invalid_existing_header(&iso));
+    }
 
     #[test]
     fn nintendo_3ds_detection_uses_the_container_not_the_folder_name() {

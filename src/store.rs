@@ -442,6 +442,19 @@ impl Store {
         Ok(())
     }
 
+    pub fn ignore_obsolete_candidate(&self, id: &str) -> rusqlite::Result<bool> {
+        self.connection
+            .execute(
+                "INSERT OR IGNORE INTO ignored_games(game_id) SELECT id FROM games
+             WHERE id=?1 AND confirmed=0 AND favorite=0 AND category_custom=0 AND cover_path IS NULL
+             AND NOT EXISTS(SELECT 1 FROM title_overrides WHERE game_id=?1)
+             AND NOT EXISTS(SELECT 1 FROM game_emulators WHERE game_id=?1)
+             AND NOT EXISTS(SELECT 1 FROM installations WHERE game_id=?1 AND launcher<>'unknown')",
+                [id],
+            )
+            .map(|changed| changed != 0)
+    }
+
     pub fn is_ignored(&self, id: &str) -> rusqlite::Result<bool> {
         self.connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM ignored_games WHERE game_id=?1)",
@@ -571,6 +584,56 @@ fn parse_launcher(value: &str) -> Launcher {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn automatic_candidate_cleanup_preserves_user_changes_and_is_reversible() {
+        let temp = tempdir().unwrap();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        for protection in [
+            "none",
+            "confirmed",
+            "favorite",
+            "title",
+            "category",
+            "cover",
+            "manual",
+        ] {
+            let mut game = Game::from_installation(
+                protection,
+                "À confirmer",
+                Installation {
+                    path: temp.path().join(protection),
+                    launcher: Launcher::Unknown,
+                    launch_profile: None,
+                    available: true,
+                },
+            );
+            if protection == "manual" {
+                game.installations[0].launcher = Launcher::Manual;
+            }
+            store.save_game(&game).unwrap();
+            match protection {
+                "confirmed" => store.set_confirmed(&game.id, true).unwrap(),
+                "favorite" => store.set_favorite(&game.id, true).unwrap(),
+                "title" => store.set_title(&game.id, "Mon titre").unwrap(),
+                "category" => store.set_category(&game.id, "Mes jeux").unwrap(),
+                "cover" => store
+                    .set_cover(&game.id, Some(&temp.path().join("cover.png")))
+                    .unwrap(),
+                _ => {}
+            }
+            assert_eq!(
+                store.ignore_obsolete_candidate(&game.id).unwrap(),
+                protection == "none",
+                "{protection}"
+            );
+            assert_eq!(store.is_ignored(&game.id).unwrap(), protection == "none");
+            assert!(!store.ignore_obsolete_candidate(&game.id).unwrap());
+            store.restore_ignored_game(&game.id).unwrap();
+            assert!(!store.is_ignored(&game.id).unwrap());
+        }
+        assert_eq!(store.games().unwrap().len(), 7);
+    }
 
     #[test]
     fn every_installation_path_reuses_its_stored_spelling() {

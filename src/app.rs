@@ -756,8 +756,24 @@ impl RustyShelfApp {
         let control = ScanControl::default();
         let worker_control = control.clone();
         let (sender, receiver) = mpsc::sync_channel(64);
+        let previous_candidates: Vec<_> = self
+            .games
+            .iter()
+            .filter(|game| !game.confirmed)
+            .cloned()
+            .collect();
         std::thread::spawn(move || {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                for game in previous_candidates {
+                    if worker_control.is_cancelled() {
+                        break;
+                    }
+                    if scan::obsolete_candidate(&game, &roots, &exclusions)
+                        && sender.send(ScanEvent::RejectedCandidate(game.id)).is_err()
+                    {
+                        return;
+                    }
+                }
                 let cover_roots = if include_launcher_catalogs {
                     sources::steam_cache_roots()
                 } else {
@@ -859,6 +875,21 @@ impl RustyShelfApp {
         }
         for event in events {
             match event {
+                ScanEvent::RejectedCandidate(id) => {
+                    if self.console_overrides.contains_key(&id) {
+                        continue;
+                    }
+                    if let Some(store) = &self.store {
+                        match store.ignore_obsolete_candidate(&id) {
+                            Ok(true) => {
+                                self.games.retain(|game| game.id != id);
+                                self.diagnostics.filtered_count += 1;
+                            }
+                            Ok(false) => {}
+                            Err(error) => self.diagnostics.error(error.to_string()),
+                        }
+                    }
+                }
                 ScanEvent::Candidate(mut game) => {
                     self.scan_seen_paths.extend(
                         game.installations
@@ -956,6 +987,17 @@ impl RustyShelfApp {
                             tr(self.language, "éléments parcourus", "items scanned")
                         )
                     };
+                    if self.diagnostics.filtered_count > 0 {
+                        self.status.push_str(&format!(
+                            " · {} {}",
+                            self.diagnostics.filtered_count,
+                            tr(
+                                self.language,
+                                "ancien(s) candidat(s) masqué(s)",
+                                "old candidate(s) hidden"
+                            )
+                        ));
+                    }
                     if self.diagnostics.error_count > 0 {
                         self.status.push_str(&format!(
                             " · {} {}",
@@ -2412,6 +2454,11 @@ impl RustyShelfApp {
                     });
                 }
                 ui.label(format!("{} {} · {} {}", self.diagnostics.error_count, tr(self.language, "erreur(s)", "error(s)"), self.diagnostics.skipped_count, tr(self.language, "chemin(s) non analysé(s)", "skipped path(s)")));
+                if self.diagnostics.filtered_count > 0 {
+                    ui.label(format!("{} {}", self.diagnostics.filtered_count, tr(self.language,
+                        "ancien(s) candidat(s) masqué(s) · restaurables dans les éléments ignorés",
+                        "old candidate(s) hidden · recoverable from ignored items")));
+                }
                 if self.diagnostics.skipped_count > 0 {
                     ui.collapsing(tr(self.language, "Dossiers protégés ou indisponibles", "Protected or unavailable folders"), |ui| {
                         ui.label(tr(self.language, "Ces chemins n’ont pas pu être analysés. Les jeux déjà enregistrés sont conservés.", "These paths could not be scanned. Existing games are preserved."));
@@ -3306,6 +3353,64 @@ mod tests {
         assert!(app.load_cover(&ctx, &game).is_none());
         image::RgbaImage::new(4097, 1).save(&path).unwrap();
         assert!(read_cover(&path).is_err());
+    }
+
+    #[test]
+    fn scan_hides_old_false_positives_but_respects_changes_made_during_scan() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("roms");
+        std::fs::create_dir(&root).unwrap();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        let mut app = test_app();
+        app.games.clear();
+        for name in [
+            "Database",
+            "Favorite",
+            "Renamed",
+            "Confirmed",
+            "Console choice",
+        ] {
+            let path = root.join(format!("{name}.gen"));
+            std::fs::write(&path, b"not a cartridge").unwrap();
+            let game = Game::from_installation(
+                name,
+                "ROM · Mega Drive",
+                Installation {
+                    path,
+                    launcher: Launcher::Unknown,
+                    launch_profile: None,
+                    available: true,
+                },
+            );
+            store.save_game(&game).unwrap();
+            app.games.push(game);
+        }
+        let ids: Vec<_> = app.games.iter().map(|game| game.id.clone()).collect();
+        app.store = Some(store);
+        app.begin_scan(vec![root], false);
+        // The worker has a snapshot; the database and latest UI choices remain authoritative.
+        let store = app.store.as_ref().unwrap();
+        store.set_favorite(&ids[1], true).unwrap();
+        store.set_title(&ids[2], "Mon jeu").unwrap();
+        store.set_confirmed(&ids[3], true).unwrap();
+        app.console_overrides
+            .insert(ids[4].clone(), "Mega Drive".into());
+        let ctx = egui::Context::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.scan_control.is_some() {
+            assert!(std::time::Instant::now() < deadline);
+            app.poll_scan(&ctx);
+            std::thread::yield_now();
+        }
+        assert_eq!(app.diagnostics.filtered_count, 1);
+        assert_eq!(app.diagnostics.error_count, 0);
+        assert_eq!(app.games.len(), 4);
+        assert!(app.status.contains("1 ancien(s) candidat(s) masqué(s)"));
+        let store = app.store.as_ref().unwrap();
+        assert!(store.is_ignored(&ids[0]).unwrap());
+        store.restore_ignored_game(&ids[0]).unwrap();
+        assert_eq!(store.games().unwrap().len(), 5);
+        assert!(temp.path().join("roms/Database.gen").is_file());
     }
 
     #[test]
