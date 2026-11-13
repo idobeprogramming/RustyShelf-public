@@ -35,6 +35,10 @@ Les noms et manifestes des lanceurs varient selon leur version. Les jeux autonom
 
 Les cartouches Nintendo 3DS `.3ds` et `.cci` sont détectées par leur en-tête NCSD, même hors d’un dossier ROMs. Les fichiers de modélisation 3D et les en-têtes tronqués sont écartés. Une ROM déjà acceptée garde sa console lorsque son disque est déconnecté. Ce contrôle de format ne garantit pas la compatibilité avec l’émulateur ni l’intégrité complète du jeu.
 
+Lors du scan d’un dossier personnalisé, les manifestes Steam/GOG sont lus avant les fichiers et sous-dossiers voisins. Les fichiers internes d’une installation reconnue ne génèrent plus de candidats supplémentaires ; les autres manifestes du même dossier restent examinés. Un manifeste invalide est signalé sans bloquer la détection des jeux autonomes voisins. Ces règles préviennent de nouveaux résultats parasites ; elles ne suppriment pas les anciens candidats ambigus déjà enregistrés.
+
+La lecture Steam vérifie le bloc `AppState`, ses champs directs, les accolades et la concordance entre l’identifiant du jeu et le nom du manifeste. Les champs d’un sous-bloc ne remplacent pas le titre ou le dossier du jeu. Un chemin d’installation réduit à `.` est refusé pour ne pas considérer toute la bibliothèque comme un seul jeu.
+
 ## Windows
 
 Installer Rust stable et les outils de compilation C++ de Visual Studio, puis :

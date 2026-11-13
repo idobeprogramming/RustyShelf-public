@@ -101,13 +101,9 @@ pub fn is_manifest(path: &Path) -> bool {
 
 pub fn read_manifest(path: &Path) -> Result<Option<Game>, String> {
     let text = super::read_manifest_text(path)?;
-    let tokens = quoted_tokens(&text)?;
-    let field = |key: &str| {
-        tokens
-            .windows(2)
-            .find(|pair| pair[0] == key)
-            .map(|pair| pair[1].clone())
-    };
+    let tokens = vdf_tokens(&text)?;
+    let fields = app_state_fields(&tokens)?;
+    let field = |key: &str| fields.get(key).map(|value| (*value).to_owned());
     let name = field("name")
         .filter(|name| !name.trim().is_empty())
         .ok_or("Titre Steam manquant")?;
@@ -115,11 +111,24 @@ pub fn read_manifest(path: &Path) -> Result<Option<Game>, String> {
         .filter(|id| super::numeric_id(id))
         .ok_or("Identifiant Steam invalide")?;
     let install_dir = field("installdir").ok_or("Dossier Steam manquant")?;
+    if !path
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case(format!("appmanifest_{app_id}.acf")))
+    {
+        return Err("Identifiant Steam différent du nom du manifeste".into());
+    }
     let common = path
         .parent()
         .ok_or("Dossier Steam manquant")?
         .join("common");
     let install = super::relative_path(&common, &install_dir)?;
+    if install == common
+        || !Path::new(&install_dir.replace('\\', "/"))
+            .components()
+            .any(|part| matches!(part, std::path::Component::Normal(_)))
+    {
+        return Err("Le manifeste Steam doit désigner un dossier de jeu".into());
+    }
     if !install.is_dir() {
         return Ok(None);
     }
@@ -142,7 +151,17 @@ pub fn read_manifest(path: &Path) -> Result<Option<Game>, String> {
 
 fn library_paths(text: &str) -> Result<Vec<PathBuf>, String> {
     // Read the whole document: several library records may share a single line.
-    Ok(quoted_tokens(text)?
+    let tokens: Vec<_> = vdf_tokens(text)?
+        .into_iter()
+        .filter_map(|token| {
+            if let VdfToken::Text(value) = token {
+                Some(value)
+            } else {
+                None
+            }
+        })
+        .collect();
+    Ok(tokens
         .windows(2)
         .filter(|pair| pair[0] == "path" && !pair[1].trim().is_empty())
         .map(|pair| PathBuf::from(&pair[1]).join("steamapps"))
@@ -150,7 +169,54 @@ fn library_paths(text: &str) -> Result<Vec<PathBuf>, String> {
 }
 
 // Valve files can contain multiple fields on one line and escaped quotes.
-fn quoted_tokens(text: &str) -> Result<Vec<String>, String> {
+#[derive(Debug, PartialEq)]
+enum VdfToken {
+    Text(String),
+    Open,
+    Close,
+}
+
+fn app_state_fields(tokens: &[VdfToken]) -> Result<std::collections::HashMap<&str, &str>, String> {
+    if !matches!(tokens.first(), Some(VdfToken::Text(name)) if name == "AppState")
+        || tokens.get(1) != Some(&VdfToken::Open)
+    {
+        return Err("Bloc AppState manquant dans le manifeste Steam".into());
+    }
+    let mut fields = std::collections::HashMap::new();
+    let mut depth = 1;
+    let mut index = 2;
+    while index < tokens.len() {
+        match &tokens[index] {
+            VdfToken::Close => {
+                depth -= 1;
+                index += 1;
+                if depth == 0 {
+                    return if index == tokens.len() {
+                        Ok(fields)
+                    } else {
+                        Err("Données inattendues après AppState".into())
+                    };
+                }
+            }
+            VdfToken::Text(key) => {
+                match tokens.get(index + 1) {
+                    Some(VdfToken::Text(value)) => {
+                        if depth == 1 && fields.insert(key.as_str(), value.as_str()).is_some() {
+                            return Err(format!("Champ Steam dupliqué : {key}"));
+                        }
+                    }
+                    Some(VdfToken::Open) => depth += 1,
+                    _ => return Err("Valeur manquante dans le manifeste Steam".into()),
+                }
+                index += 2;
+            }
+            VdfToken::Open => return Err("Bloc Steam sans nom".into()),
+        }
+    }
+    Err("Bloc non fermé dans le manifeste Steam".into())
+}
+
+fn vdf_tokens(text: &str) -> Result<Vec<VdfToken>, String> {
     let mut chars = text.chars().peekable();
     let mut tokens = Vec::new();
     while let Some(ch) = chars.next() {
@@ -177,7 +243,13 @@ fn quoted_tokens(text: &str) -> Result<Vec<String>, String> {
             if !closed {
                 return Err("Guillemet non fermé dans le manifeste Steam".into());
             }
-            tokens.push(value);
+            tokens.push(VdfToken::Text(value));
+        } else if ch == '{' {
+            tokens.push(VdfToken::Open);
+        } else if ch == '}' {
+            tokens.push(VdfToken::Close);
+        } else if !ch.is_whitespace() && ch != '\u{feff}' {
+            return Err("Caractère inattendu dans le manifeste Steam".into());
         }
     }
     Ok(tokens)
@@ -208,6 +280,37 @@ pub(super) fn default_steamapps() -> Vec<PathBuf> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn manifest_fields_must_belong_to_app_state_and_match_the_filename() {
+        let temp = tempdir().unwrap();
+        let library = temp.path().join("steamapps");
+        fs::create_dir_all(library.join("common/Été")).unwrap();
+        let path = library.join("appmanifest_42.acf");
+        let valid = r#""AppState" {
+            "UserConfig" { "name" "Wrong title" "installdir" "Wrong folder" "appid" "999" }
+            "appid" "42" "name" "Été {édition}" "installdir" "Été"
+            // Braces inside comments and quoted strings are not structure: }
+            "InstalledDepots" { "10" { "manifest" "123" } }
+        }"#;
+        fs::write(&path, format!("\u{feff}{valid}")).unwrap();
+        let game = read_manifest(&path).unwrap().unwrap();
+        assert_eq!(game.title, "Été {édition}");
+        assert_eq!(game.installations[0].path, library.join("common/Été"));
+        for invalid in [
+            valid.replace("\"appid\" \"42\"", "\"appid\" \"43\""),
+            valid.replace("\"name\" \"Été {édition}\"", ""),
+            valid.replace("\"installdir\" \"Été\"", "\"installdir\" \".\""),
+            valid.replace("\"appid\" \"42\"", "\"appid\" \"42\" \"appid\" \"42\""),
+            valid.trim_end_matches('}').to_owned(),
+            format!("{valid} }}"),
+            valid.replace("\"AppState\"", "\"Other\""),
+            r#""AppState" { "name" }"#.into(),
+        ] {
+            fs::write(&path, &invalid).unwrap();
+            assert!(read_manifest(&path).is_err(), "{invalid}");
+        }
+    }
 
     #[test]
     fn compact_library_list_finds_all_drives_and_cycles_do_not_repeat_games() {

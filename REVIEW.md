@@ -1,5 +1,13 @@
 # Revue du 5 novembre 2026
 
+## Manifestes locaux et lecture Steam — 13 novembre 2026
+
+Le parcours d’un dossier personnalisé pouvait émettre des candidats avant de lire les métadonnées Steam/GOG du même jeu. Le scanner traite maintenant les manifestes en premier dans chaque dossier et retient les installations reconnues pour filtrer leurs fichiers internes. Il continue à lire les autres manifestes du même dossier. Un manifeste invalide n’ajoute aucun chemin à ce filtre ; les jeux voisins restent détectables. Les tests couvrent Steam, plusieurs manifestes GOG partageant un dossier, les sous-dossiers, un dossier voisin au préfixe identique et la poursuite après une erreur. Ces règles préviennent les nouveaux candidats parasites, sans effacer les anciens résultats ambigus.
+
+Le lecteur Steam cherchait auparavant la première paire de chaînes correspondant à un champ, sans tenir compte des blocs. Il utilise désormais les seuls champs directs d’AppState, avec vérification de la structure et rejet des champs directs dupliqués. Les sous-blocs, commentaires, guillemets échappés, accolades dans les chaînes et noms Unicode sont couverts. Un identifiant différent du nom du manifeste et un dossier d’installation réduit à la racine `common` sont refusés. L’analyse est itérative, sans récursion ni dépendance supplémentaire, et conserve la limite de lecture de 4 Mo.
+
+Validation : **116 tests**, formatage et Clippy passent sous Windows. Le premier lot (priorité des manifestes) passait 115 tests. Aucun jeu lancé et aucune modification directe de la bibliothèque utilisateur. Le cache Rust signale toujours la copie à la place des liens physiques sur X:. Validation graphique Linux non effectuée.
+
 ## Renforcement complémentaire du scan — 13 novembre 2026
 
 La consultation en lecture seule du catalogue révèle encore des composants d’Office, Visual Studio, SDKs, pilotes AMD/Gigabyte et Brave dans « À confirmer ». Le scanner et le nettoyage des anciens candidats reconnaissent maintenant leurs dossiers d’installation directement sous Program Files. Un test vérifie aussi que les mêmes noms hors de ces dossiers et les jeux voisins restent admissibles. Ce premier lot passe 112 tests.
