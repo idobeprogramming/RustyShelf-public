@@ -131,6 +131,7 @@ pub fn scan_roots(
     mut emit: impl FnMut(ScanEvent),
 ) {
     let mut visited = 0;
+    let mut recognized_installations = Vec::new();
     let windows_directory = if cfg!(windows) {
         std::env::var_os("SystemRoot").map(PathBuf::from)
     } else {
@@ -150,6 +151,11 @@ pub fn scan_roots(
         let mut walker = WalkDir::new(root)
             .follow_links(false)
             .max_open(16)
+            // Inspect local launcher metadata before sibling files or subfolders,
+            // regardless of the filesystem's enumeration order.
+            .sort_by_key(|entry| {
+                !entry.file_type().is_file() || !crate::sources::is_manifest(entry.path())
+            })
             .into_iter();
         // Check cancellation even between excluded entries. filter_entry can
         // otherwise consume many of them before returning control to this loop.
@@ -187,6 +193,9 @@ pub fn scan_roots(
                                         })
                                 });
                                 if !game.installations.is_empty() {
+                                    recognized_installations.extend(
+                                        game.installations.iter().map(|item| item.path.clone()),
+                                    );
                                     emit(ScanEvent::Candidate(game));
                                 }
                             }
@@ -195,6 +204,14 @@ pub fn scan_roots(
                                 emit(ScanEvent::Error(entry.path().to_owned(), message))
                             }
                         }
+                        continue;
+                    }
+                    // Still inspect manifests in a shared folder (e.g. several
+                    // GOG records), but don't turn its assets into new games.
+                    if recognized_installations
+                        .iter()
+                        .any(|install| path_is_within(entry.path(), install))
+                    {
                         continue;
                     }
                     if crate::rom::console(entry.path()).is_some() {
@@ -638,6 +655,74 @@ mod tests {
     use super::*;
     use std::{fs, sync::mpsc};
     use tempfile::tempdir;
+
+    #[test]
+    fn local_manifests_take_priority_over_internal_game_candidates() {
+        let temp = tempdir().unwrap();
+        let library = temp.path().join("Archive/steamapps");
+        let steam = library.join("common/Été");
+        let gog = temp.path().join("GOG Adventure");
+        let neighbor = temp.path().join("GOG Adventure 2");
+        for folder in [&steam, &gog, &neighbor] {
+            fs::create_dir_all(folder.join("Bin")).unwrap();
+            for name in ["A.nes", "Bin/Tool.nes"] {
+                fs::write(folder.join(name), b"NES\x1a\0\0\0\0\0\0\0\0\0\0\0\0").unwrap();
+            }
+        }
+        fs::write(
+            library.join("appmanifest_42.acf"),
+            r#""AppState" { "appid" "42" "name" "Été" "installdir" "Été" }"#,
+        )
+        .unwrap();
+        for (id, name) in [(1, "GOG Adventure"), (2, "GOG Bonus")] {
+            fs::write(
+                gog.join(format!("goggame-{id}.info")),
+                format!(r#"{{"gameId":"{id}","name":"{name}"}}"#),
+            )
+            .unwrap();
+        }
+        let mut games = Vec::new();
+        scan_roots(
+            &[temp.path().to_owned()],
+            &[],
+            &ScanControl::default(),
+            |event| {
+                if let ScanEvent::Candidate(game) = event {
+                    games.push(game);
+                }
+            },
+        );
+        assert_eq!(games.iter().filter(|game| game.confirmed).count(), 3);
+        let candidates: Vec<_> = games.iter().filter(|game| !game.confirmed).collect();
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates
+            .iter()
+            .all(|game| game.installations[0].path.starts_with(&neighbor)));
+    }
+
+    #[test]
+    fn invalid_manifest_does_not_hide_independent_games_in_the_folder() {
+        let temp = tempdir().unwrap();
+        fs::write(temp.path().join("goggame-42.info"), "broken").unwrap();
+        fs::write(
+            temp.path().join("Étoiles.nes"),
+            b"NES\x1a\0\0\0\0\0\0\0\0\0\0\0\0",
+        )
+        .unwrap();
+        let mut candidates = 0;
+        let mut errors = 0;
+        scan_roots(
+            &[temp.path().to_owned()],
+            &[],
+            &ScanControl::default(),
+            |event| match event {
+                ScanEvent::Candidate(_) => candidates += 1,
+                ScanEvent::Error(_, _) => errors += 1,
+                _ => {}
+            },
+        );
+        assert_eq!((candidates, errors), (1, 1));
+    }
 
     #[test]
     fn installed_productivity_and_driver_tools_are_not_game_candidates() {
