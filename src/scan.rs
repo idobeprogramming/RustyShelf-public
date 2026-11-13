@@ -487,6 +487,9 @@ fn has_game_assets(executable: &Path) -> bool {
 }
 
 fn support_path(path: &Path) -> bool {
+    if known_application_path(path) {
+        return true;
+    }
     path.ancestors().take(6).any(|folder| {
         folder.file_name().is_some_and(|name| {
             matches!(
@@ -507,6 +510,33 @@ fn support_path(path: &Path) -> bool {
                 .parent()
                 .and_then(Path::file_name)
                 .is_some_and(|name| name.eq_ignore_ascii_case("Engine"))
+    })
+}
+
+fn known_application_path(path: &Path) -> bool {
+    // Match an installed application directly under Program Files, not a game
+    // title containing a vendor name or an arbitrary project folder.
+    path.ancestors().any(|folder| {
+        let Some(parent) = folder.parent().and_then(Path::file_name) else {
+            return false;
+        };
+        if !parent.eq_ignore_ascii_case("Program Files")
+            && !parent.eq_ignore_ascii_case("Program Files (x86)")
+        {
+            return false;
+        }
+        folder.file_name().is_some_and(|name| {
+            matches!(
+                name.to_string_lossy().to_ascii_lowercase().as_str(),
+                "microsoft office"
+                    | "microsoft visual studio"
+                    | "microsoft sdks"
+                    | "windows kits"
+                    | "amd"
+                    | "gigabyte"
+                    | "bravesoftware"
+            )
+        })
     })
 }
 
@@ -608,6 +638,59 @@ mod tests {
     use super::*;
     use std::{fs, sync::mpsc};
     use tempfile::tempdir;
+
+    #[test]
+    fn installed_productivity_and_driver_tools_are_not_game_candidates() {
+        let temp = tempdir().unwrap();
+        for relative in [
+            "Program Files/Microsoft Office/root/Office16",
+            "Program Files (x86)/Microsoft Visual Studio/18/BuildTools/Common7/IDE",
+            "Program Files/Microsoft SDKs/NuGetPackages/compiler",
+            "Program Files (x86)/Windows Kits/10/bin",
+            "Program Files/AMD/CNext/CNext",
+            "program files/GIGABYTE/Control Center/Lib",
+            "Program Files (x86)/BraveSoftware/Update/1.0",
+        ] {
+            let folder = temp.path().join(relative);
+            fs::create_dir_all(&folder).unwrap();
+            // Nearby engine files must not turn a known software component into a game.
+            fs::write(folder.join("data.win"), []).unwrap();
+            let executable = folder.join("Component.exe");
+            fs::write(&executable, []).unwrap();
+            assert!(
+                candidate_from_executable(&executable).is_none(),
+                "{relative}"
+            );
+            let game = Game::from_installation(
+                "Component",
+                "À confirmer",
+                Installation {
+                    path: folder,
+                    launcher: Launcher::Unknown,
+                    launch_profile: None,
+                    available: true,
+                },
+            );
+            assert!(
+                obsolete_candidate(&game, &[temp.path().to_path_buf()], &[]),
+                "{relative}"
+            );
+        }
+        for relative in [
+            "Games/AMD",
+            "Games/Microsoft Office",
+            "Program Files/My Game",
+            "Program Files/AMD Adventure",
+        ] {
+            let folder = temp.path().join(relative);
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(folder.join("data.win"), []).unwrap();
+            assert!(
+                candidate_from_executable(&folder.join("Adventure.exe")).is_some(),
+                "{relative}"
+            );
+        }
+    }
 
     #[test]
     fn old_candidates_are_rechecked_conservatively_within_scan_scope() {
