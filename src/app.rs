@@ -1954,46 +1954,6 @@ impl RustyShelfApp {
                 .strong()
                 .color(self.foreground_color()),
         );
-        ui.collapsing(tr(self.language, "Modifier le nom", "Edit name"), |ui| {
-            if self.title_edit_id.as_deref() != Some(&game.id) {
-                self.title_edit = game.title.clone();
-                self.title_edit_id = Some(game.id.clone());
-            }
-            ui.add(
-                egui::TextEdit::singleline(&mut self.title_edit)
-                    .desired_width(ui.available_width()),
-            );
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .add_enabled(
-                        !self.title_edit.trim().is_empty(),
-                        egui::Button::new(tr(self.language, "Enregistrer le nom", "Save name")),
-                    )
-                    .clicked()
-                {
-                    let title = self.title_edit.trim().to_owned();
-                    if self.update_library(|store| store.set_title(&game.id, &title)) {
-                        self.title_edit = title;
-                    }
-                }
-                if ui
-                    .button(tr(
-                        self.language,
-                        "Rétablir le nom détecté",
-                        "Restore detected name",
-                    ))
-                    .clicked()
-                    && self.update_library(|store| store.reset_title(&game.id))
-                {
-                    self.title_edit_id = None;
-                }
-            });
-            ui.small(tr(
-                self.language,
-                "Ce nom reste conservé après les scans. Les fichiers ne sont pas renommés.",
-                "This name survives scans. Files are not renamed.",
-            ));
-        });
         let category = if let Some(console) = self.game_console(&game) {
             console
         } else if game.category == "À confirmer" {
@@ -2007,6 +1967,143 @@ impl RustyShelfApp {
             .unwrap_or(theme_muted_text(self.theme));
         ui.label(RichText::new(category).color(muted));
         ui.add_space(10.0);
+        ui.label(
+            RichText::new(tr(self.language, "INSTALLATIONS", "INSTALLATIONS"))
+                .size(11.0)
+                .color(muted),
+        );
+        let mut launch_profile: Option<LaunchProfile> = None;
+        let mut launch_uri: Option<String> = None;
+        let mut launch_image: Option<(PathBuf, PathBuf)> = None;
+        for installation in &game.installations {
+            let detected_path = installation
+                .launch_profile
+                .as_ref()
+                .map(|profile| &profile.command)
+                .filter(|command| !game.confirmed && command.is_absolute())
+                .unwrap_or(&installation.path);
+            ui.separator();
+            ui.horizontal_wrapped(|ui| {
+                let source = if installation.launcher == Launcher::Unknown {
+                    tr(self.language, "Détecté sur le disque", "Found on disk")
+                } else {
+                    launcher_label(&installation.launcher, self.language)
+                };
+                ui.strong(source);
+                ui.label(if installation.available {
+                    tr(self.language, "Disponible", "Available")
+                } else {
+                    tr(self.language, "Indisponible", "Unavailable")
+                });
+            });
+            ui.add(
+                egui::Label::new(detected_path.display().to_string())
+                    .wrap()
+                    .selectable(true),
+            );
+            if crate::rom::console(&installation.path).is_some() && installation.available {
+                if ui
+                    .add_enabled(
+                        self.category_emulator(&game)
+                            .is_some_and(|emulator| emulator.executable.is_file()),
+                        egui::Button::new(tr(
+                            self.language,
+                            "▶  Lancer avec l’émulateur",
+                            "▶  Launch in emulator",
+                        )),
+                    )
+                    .on_disabled_hover_text(tr(
+                        self.language,
+                        "Classe l’image, puis associe un émulateur installé à sa catégorie.",
+                        "Classify the image, then assign an installed emulator to its category.",
+                    ))
+                    .clicked()
+                {
+                    if let Some(emulator) = self.category_emulator(&game) {
+                        launch_image =
+                            Some((emulator.executable.clone(), installation.path.clone()));
+                    } else {
+                        self.status = tr(
+                            self.language,
+                            "Choisis un émulateur dans la catégorie de cette image.",
+                            "Choose an emulator in this image category.",
+                        )
+                        .into();
+                    }
+                }
+            } else if installation.launch_profile.is_some()
+                && installation.available
+                && ui
+                    .button(tr(self.language, "▶  Jouer", "▶  Play"))
+                    .clicked()
+            {
+                if let Some(profile) = &installation.launch_profile {
+                    if let Some(uri) = &profile.launcher_command {
+                        launch_uri = Some(uri.clone());
+                    } else {
+                        launch_profile = Some(profile.clone());
+                    }
+                }
+            }
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add_enabled(
+                        installation.available,
+                        egui::Button::new(tr(self.language, "Ouvrir le dossier", "Open folder")),
+                    )
+                    .clicked()
+                {
+                    let folder = if installation.path.is_file() {
+                        installation.path.parent()
+                    } else {
+                        Some(installation.path.as_path())
+                    };
+                    if let Some(folder) = folder.filter(|path| path.is_absolute() && path.is_dir())
+                    {
+                        if let Err(error) = open::that_detached(folder) {
+                            self.status = error.to_string();
+                        }
+                    } else {
+                        self.status =
+                            tr(self.language, "Dossier indisponible", "Folder unavailable").into();
+                    }
+                }
+                if ui
+                    .button(tr(self.language, "Copier le chemin", "Copy path"))
+                    .clicked()
+                {
+                    ui.ctx().copy_text(detected_path.display().to_string());
+                    self.status = tr(self.language, "Chemin copié.", "Path copied.").into();
+                }
+            });
+        }
+        if let Some(uri) = launch_uri.filter(|uri| !uri.is_empty()) {
+            if let Err(error) = launch_uri_handler(&uri) {
+                self.status = error.to_string();
+            }
+        }
+        if let Some(profile) = launch_profile {
+            if let Err(error) = launch_profile_command(&profile) {
+                self.status = error.to_string();
+            }
+        }
+        if let Some((emulator, image)) = launch_image {
+            if let Err(error) = launch_emulator(&emulator, &image) {
+                self.status = error.to_string();
+            }
+        }
+        ui.add_space(10.0);
+        if !game.confirmed
+            && ui
+                .button(tr(
+                    self.language,
+                    "✓ Confirmer ce jeu",
+                    "✓ Confirm this game",
+                ))
+                .clicked()
+        {
+            self.update_library(|store| store.set_confirmed(&game.id, true));
+        }
         if ui
             .button(tr(
                 self.language,
@@ -2020,17 +2117,6 @@ impl RustyShelfApp {
                 self.selected_game = None;
             }
             return;
-        }
-        if !game.confirmed
-            && ui
-                .button(tr(
-                    self.language,
-                    "✓ Confirmer ce jeu",
-                    "✓ Confirm this game",
-                ))
-                .clicked()
-        {
-            self.update_library(|store| store.set_confirmed(&game.id, true));
         }
         if ui
             .button(if game.favorite {
@@ -2050,57 +2136,6 @@ impl RustyShelfApp {
         {
             self.update_library(|store| store.set_favorite(&game.id, !game.favorite));
         }
-        ui.horizontal(|ui| {
-            ui.label(tr(self.language, "Catégorie", "Category"));
-            if self.category_edit_id.as_deref() != Some(&game.id) {
-                self.category_edit = game.category.clone();
-                self.category_edit_id = Some(game.id.clone());
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.category_edit).desired_width(120.0));
-            if ui
-                .button(tr(self.language, "Enregistrer", "Save"))
-                .clicked()
-                && !self.category_edit.trim().is_empty()
-            {
-                let category = self.category_edit.trim().to_owned();
-                self.update_library(|store| store.set_category(&game.id, &category));
-            }
-        });
-        if ui
-            .button(tr(
-                self.language,
-                "Choisir une vignette locale…",
-                "Choose a local cover…",
-            ))
-            .clicked()
-        {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Image", &["png", "jpg", "jpeg", "bmp", "ico"])
-                .pick_file()
-            {
-                if let Err(error) = read_cover(&path) {
-                    self.status = format!(
-                        "{} : {error}",
-                        tr(self.language, "Vignette illisible", "Unreadable cover")
-                    );
-                    return;
-                }
-                if self.update_library(|store| store.set_cover(&game.id, Some(&path))) {
-                    self.cover_textures.remove(&game.id);
-                }
-            }
-        }
-        ui.add_space(10.0);
-        ui.label(
-            RichText::new(tr(self.language, "INSTALLATIONS", "INSTALLATIONS"))
-                .size(11.0)
-                .color(muted),
-        );
-        let mut launch_profile: Option<LaunchProfile> = None;
-        let mut launch_uri: Option<String> = None;
-        let mut launch_image: Option<(PathBuf, PathBuf)> = None;
         let is_disc_game = self.game_console(&game).is_some();
         if is_disc_game {
             let current_console = self.console_overrides.get(&game.id).cloned();
@@ -2164,91 +2199,86 @@ impl RustyShelfApp {
                 ));
             }
         }
-        for installation in &game.installations {
-            ui.separator();
-            ui.label(launcher_label(&installation.launcher, self.language));
-            ui.label(installation.path.display().to_string());
-            ui.label(if installation.available {
-                tr(self.language, "Disponible", "Available")
-            } else {
-                tr(
-                    self.language,
-                    "Installation indisponible",
-                    "Installation unavailable",
-                )
-            });
-            if crate::rom::console(&installation.path).is_some() && installation.available {
+        ui.collapsing(tr(self.language, "Modifier le nom", "Edit name"), |ui| {
+            if self.title_edit_id.as_deref() != Some(&game.id) {
+                self.title_edit = game.title.clone();
+                self.title_edit_id = Some(game.id.clone());
+            }
+            ui.add(
+                egui::TextEdit::singleline(&mut self.title_edit)
+                    .desired_width(ui.available_width()),
+            );
+            ui.horizontal_wrapped(|ui| {
                 if ui
                     .add_enabled(
-                        self.category_emulator(&game)
-                            .is_some_and(|emulator| emulator.executable.is_file()),
-                        egui::Button::new(tr(
-                            self.language,
-                            "▶  Lancer avec l’émulateur",
-                            "▶  Launch in emulator",
-                        )),
+                        !self.title_edit.trim().is_empty(),
+                        egui::Button::new(tr(self.language, "Enregistrer le nom", "Save name")),
                     )
-                    .on_disabled_hover_text(tr(
-                        self.language,
-                        "Classe l’image, puis associe un émulateur installé à sa catégorie.",
-                        "Classify the image, then assign an installed emulator to its category.",
-                    ))
                     .clicked()
                 {
-                    if let Some(emulator) = self.category_emulator(&game) {
-                        launch_image =
-                            Some((emulator.executable.clone(), installation.path.clone()));
-                    } else {
-                        self.status = tr(
-                            self.language,
-                            "Choisis un émulateur dans la catégorie de cette image.",
-                            "Choose an emulator in this image category.",
-                        )
-                        .into();
+                    let title = self.title_edit.trim().to_owned();
+                    if self.update_library(|store| store.set_title(&game.id, &title)) {
+                        self.title_edit = title;
                     }
                 }
-            } else if (installation.launch_profile.is_some()
-                || installation.launcher == Launcher::Steam)
-                && installation.available
-                && ui
-                    .button(tr(self.language, "▶  Jouer", "▶  Play"))
+                if ui
+                    .button(tr(
+                        self.language,
+                        "Rétablir le nom détecté",
+                        "Restore detected name",
+                    ))
                     .clicked()
-            {
-                if let Some(profile) = &installation.launch_profile {
-                    if let Some(uri) = &profile.launcher_command {
-                        launch_uri = Some(uri.clone());
-                    } else {
-                        launch_profile = Some(profile.clone());
-                    }
+                    && self.update_library(|store| store.reset_title(&game.id))
+                {
+                    self.title_edit_id = None;
                 }
+            });
+            ui.small(tr(
+                self.language,
+                "Ce nom reste conservé après les scans. Les fichiers ne sont pas renommés.",
+                "This name survives scans. Files are not renamed.",
+            ));
+        });
+        ui.horizontal(|ui| {
+            ui.label(tr(self.language, "Catégorie", "Category"));
+            if self.category_edit_id.as_deref() != Some(&game.id) {
+                self.category_edit = game.category.clone();
+                self.category_edit_id = Some(game.id.clone());
             }
+        });
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.category_edit).desired_width(120.0));
             if ui
-                .button(tr(self.language, "Ouvrir le dossier", "Open folder"))
+                .button(tr(self.language, "Enregistrer", "Save"))
                 .clicked()
+                && !self.category_edit.trim().is_empty()
             {
-                let folder = if installation.path.is_file() {
-                    installation.path.parent().unwrap_or(&installation.path)
-                } else {
-                    &installation.path
-                };
-                if let Err(error) = open::that_detached(folder) {
-                    self.status = error.to_string();
+                let category = self.category_edit.trim().to_owned();
+                self.update_library(|store| store.set_category(&game.id, &category));
+            }
+        });
+        if ui
+            .button(tr(
+                self.language,
+                "Choisir une vignette locale…",
+                "Choose a local cover…",
+            ))
+            .clicked()
+        {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Image", &["png", "jpg", "jpeg", "bmp", "ico"])
+                .pick_file()
+            {
+                if let Err(error) = read_cover(&path) {
+                    self.status = format!(
+                        "{} : {error}",
+                        tr(self.language, "Vignette illisible", "Unreadable cover")
+                    );
+                    return;
                 }
-            }
-        }
-        if let Some(uri) = launch_uri.filter(|uri| !uri.is_empty()) {
-            if let Err(error) = launch_uri_handler(&uri) {
-                self.status = error.to_string();
-            }
-        }
-        if let Some(profile) = launch_profile {
-            if let Err(error) = launch_profile_command(&profile) {
-                self.status = error.to_string();
-            }
-        }
-        if let Some((emulator, image)) = launch_image {
-            if let Err(error) = launch_emulator(&emulator, &image) {
-                self.status = error.to_string();
+                if self.update_library(|store| store.set_cover(&game.id, Some(&path))) {
+                    self.cover_textures.remove(&game.id);
+                }
             }
         }
     }
