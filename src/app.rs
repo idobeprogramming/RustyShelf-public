@@ -762,24 +762,33 @@ impl RustyShelfApp {
             .filter(|game| !game.confirmed)
             .cloned()
             .collect();
+        let cleanup_label = tr(
+            self.language,
+            "Vérification des anciens candidats…",
+            "Rechecking old candidates…",
+        );
         std::thread::spawn(move || {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                for game in previous_candidates {
-                    if worker_control.is_cancelled() {
-                        break;
-                    }
-                    if scan::obsolete_candidate(&game, &roots, &exclusions)
-                        && sender.send(ScanEvent::RejectedCandidate(game.id)).is_err()
-                    {
-                        return;
-                    }
-                }
                 let cover_roots = if include_launcher_catalogs {
                     sources::steam_cache_roots()
                 } else {
                     Vec::new()
                 };
-                let emit_candidate = |mut game: Game| {
+                let mut launcher_installations = Vec::new();
+                let mut emit_candidate = |mut game: Game| {
+                    launcher_installations.extend(
+                        game.installations
+                            .iter()
+                            .filter(|installation| {
+                                !matches!(
+                                    installation.launcher,
+                                    Launcher::Unknown | Launcher::Manual
+                                ) && installation.available
+                                    && installation.path.parent().is_some()
+                                    && installation.path.is_dir()
+                            })
+                            .map(|installation| installation.path.clone()),
+                    );
                     game.cover_path = crate::covers::find(&game, &cover_roots, &worker_control);
                     sender.send(ScanEvent::Candidate(game)).is_ok()
                 };
@@ -793,7 +802,7 @@ impl RustyShelfApp {
                     Vec::new()
                 };
                 let games = sources::within_scan_scope(discovered, &roots, &exclusions);
-                let mut scan_exclusions = exclusions;
+                let mut scan_exclusions = exclusions.clone();
                 for game in games {
                     if worker_control.is_cancelled() {
                         break;
@@ -807,14 +816,51 @@ impl RustyShelfApp {
                         return;
                     }
                 }
+                let mut scan_result = (0, true);
                 scan::scan_roots(&roots, &scan_exclusions, &worker_control, |event| {
                     let result = match event {
                         ScanEvent::Candidate(game) => emit_candidate(game),
+                        ScanEvent::Finished { visited, cancelled } => {
+                            scan_result = (visited, cancelled);
+                            true
+                        }
                         event => sender.send(event).is_ok(),
                     };
                     if !result {
                         worker_control.cancel();
                     }
+                });
+                let (visited, cancelled) = scan_result;
+                // Discovery must reach the store first: an old candidate can be
+                // promoted by a manifest or reappear with a valid new profile.
+                if !cancelled && !previous_candidates.is_empty() {
+                    if sender
+                        .send(ScanEvent::Progress(scan::ScanProgress {
+                            visited,
+                            current: PathBuf::from(cleanup_label),
+                        }))
+                        .is_err()
+                    {
+                        return;
+                    }
+                    for game in previous_candidates {
+                        if worker_control.is_cancelled() {
+                            break;
+                        }
+                        if scan::obsolete_candidate(
+                            &game,
+                            &roots,
+                            &exclusions,
+                            &launcher_installations,
+                        ) && sender.send(ScanEvent::RejectedCandidate(game.id)).is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+                let _ = sender.send(ScanEvent::Finished {
+                    visited,
+                    cancelled: cancelled || worker_control.is_cancelled(),
                 });
             }));
             if outcome.is_err() {
@@ -876,7 +922,19 @@ impl RustyShelfApp {
         for event in events {
             match event {
                 ScanEvent::RejectedCandidate(id) => {
-                    if self.console_overrides.contains_key(&id) {
+                    if self.console_overrides.contains_key(&id)
+                        || self
+                            .games
+                            .iter()
+                            .find(|game| game.id == id)
+                            .is_some_and(|game| {
+                                game.installations.iter().any(|installation| {
+                                    self.scan_seen_paths
+                                        .iter()
+                                        .any(|path| same_path(path, &installation.path))
+                                })
+                            })
+                    {
                         continue;
                     }
                     if let Some(store) = &self.store {
@@ -3411,6 +3469,112 @@ mod tests {
         store.restore_ignored_game(&ids[0]).unwrap();
         assert_eq!(store.games().unwrap().len(), 5);
         assert!(temp.path().join("roms/Database.gen").is_file());
+    }
+
+    #[test]
+    fn scan_hides_legacy_nested_pc_duplicates_after_confirming_launcher_installations() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Games");
+        let steamapps = root.join("Steam/steamapps");
+        let install = steamapps.join("common/Été");
+        let duplicate = install.join("Bin");
+        let twin = install.join("Twin");
+        let customized = install.join("Tools");
+        let excluded = install.join("Excluded");
+        let outside = temp.path().join("Other drive/Twin");
+        let portable = steamapps.join("common/Été portable");
+        for path in [
+            &duplicate,
+            &twin,
+            &customized,
+            &excluded,
+            &outside,
+            &portable,
+        ] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::fs::write(
+            steamapps.join("appmanifest_42.acf"),
+            r#""AppState" { "appid" "42" "name" "Été" "installdir" "Été" }"#,
+        )
+        .unwrap();
+        let rom = install.join("Homebrew.nes");
+        std::fs::write(&rom, b"NES\x1a\0\0\0\0\0\0\0\0\0\0\0\0").unwrap();
+        let candidate = |title, path| {
+            Game::from_installation(
+                title,
+                "À confirmer",
+                Installation {
+                    path,
+                    launcher: Launcher::Unknown,
+                    launch_profile: None,
+                    available: true,
+                },
+            )
+        };
+        let old_root = candidate("setup", install.clone());
+        let helper = candidate("Companion tool", duplicate);
+        let mut multi = candidate("Twin", twin);
+        multi.installations.push(Installation {
+            path: outside,
+            ..multi.installations[0].clone()
+        });
+        let protected = candidate("Keep this tool", customized);
+        let excluded_game = candidate("Excluded tool", excluded.clone());
+        let cartridge = candidate("Homebrew", rom);
+        let neighbor = candidate("Portable game", portable);
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        for game in [
+            &old_root,
+            &helper,
+            &multi,
+            &protected,
+            &excluded_game,
+            &cartridge,
+            &neighbor,
+        ] {
+            store.save_game(game).unwrap();
+        }
+        store.set_title(&protected.id, "À conserver").unwrap();
+        let mut app = test_app();
+        app.games = deduplicate_library(store.games().unwrap());
+        app.exclusions = vec![excluded];
+        app.store = Some(store);
+        app.begin_scan(vec![root], false);
+        let ctx = egui::Context::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.scan_control.is_some() {
+            assert!(std::time::Instant::now() < deadline);
+            app.poll_scan(&ctx);
+            std::thread::yield_now();
+        }
+        let store = app.store.as_ref().unwrap();
+        assert_eq!(app.diagnostics.filtered_count, 1);
+        assert_eq!(app.diagnostics.error_count, 0);
+        assert!(store.is_ignored(&helper.id).unwrap());
+        for game in [
+            &old_root,
+            &multi,
+            &protected,
+            &excluded_game,
+            &cartridge,
+            &neighbor,
+        ] {
+            assert!(!store.is_ignored(&game.id).unwrap(), "{}", game.title);
+        }
+        let saved = store.games().unwrap();
+        let upgraded = saved.iter().find(|game| game.id == old_root.id).unwrap();
+        assert!(upgraded.confirmed);
+        assert_eq!(upgraded.title, "Été");
+        assert_eq!(upgraded.installations[0].launcher, Launcher::Steam);
+        assert!(
+            saved
+                .iter()
+                .find(|game| game.id == cartridge.id)
+                .unwrap()
+                .installations[0]
+                .available
+        );
     }
 
     #[test]

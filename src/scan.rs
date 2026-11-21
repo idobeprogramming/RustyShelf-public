@@ -574,7 +574,12 @@ fn known_application_path(path: &Path) -> bool {
     })
 }
 
-pub fn obsolete_candidate(game: &Game, roots: &[PathBuf], exclusions: &[PathBuf]) -> bool {
+pub fn obsolete_candidate(
+    game: &Game,
+    roots: &[PathBuf],
+    exclusions: &[PathBuf],
+    launcher_installations: &[PathBuf],
+) -> bool {
     !game.confirmed
         && !game.favorite
         && !game.installations.is_empty()
@@ -585,17 +590,38 @@ pub fn obsolete_candidate(game: &Game, roots: &[PathBuf], exclusions: &[PathBuf]
                 || exclusions
                     .iter()
                     .any(|excluded| path_is_within(path, excluded))
-                || path.metadata().is_err()
             {
                 return false;
             }
-            if path.is_file() {
+            let Ok(metadata) = path.metadata() else {
+                return false;
+            };
+            if metadata.is_file() {
                 if crate::rom::invalid_existing_header(path) {
                     return true;
                 }
                 if crate::rom::console(path).is_some() {
                     return false;
                 }
+            }
+            // Older scans stored the folder of each executable as its own
+            // installation. A strict child of a recognized game is redundant
+            // unless its profile points outside that game.
+            if metadata.is_dir()
+                && !launcher_installations
+                    .iter()
+                    .any(|install| same_root(path, install))
+                && path.parent().is_some_and(|parent| {
+                    launcher_installations.iter().any(|install| {
+                        path_is_within(parent, install)
+                            && installation
+                                .launch_profile
+                                .as_ref()
+                                .is_none_or(|profile| path_is_within(&profile.command, install))
+                    })
+                })
+            {
+                return true;
             }
             let name = installation
                 .launch_profile
@@ -791,7 +817,7 @@ mod tests {
                 },
             );
             assert!(
-                obsolete_candidate(&game, &[temp.path().to_path_buf()], &[]),
+                obsolete_candidate(&game, &[temp.path().to_path_buf()], &[], &[]),
                 "{relative}"
             );
         }
@@ -817,6 +843,9 @@ mod tests {
     fn old_candidates_are_rechecked_conservatively_within_scan_scope() {
         let temp = tempdir().unwrap();
         let root = temp.path().to_path_buf();
+        let obsolete = |game: &Game, roots: &[PathBuf], exclusions: &[PathBuf]| {
+            obsolete_candidate(game, roots, exclusions, &[])
+        };
         let mut game = Game::from_installation(
             "vcredist_x64",
             "À confirmer",
@@ -827,43 +856,39 @@ mod tests {
                 available: true,
             },
         );
-        assert!(obsolete_candidate(&game, std::slice::from_ref(&root), &[]));
-        assert!(!obsolete_candidate(&game, &[root.join("Other")], &[]));
-        assert!(!obsolete_candidate(
+        assert!(obsolete(&game, std::slice::from_ref(&root), &[]));
+        assert!(!obsolete(&game, &[root.join("Other")], &[]));
+        assert!(!obsolete(
             &game,
             std::slice::from_ref(&root),
             std::slice::from_ref(&root)
         ));
         game.confirmed = true;
-        assert!(!obsolete_candidate(&game, std::slice::from_ref(&root), &[]));
+        assert!(!obsolete(&game, std::slice::from_ref(&root), &[]));
         game.confirmed = false;
         game.favorite = true;
-        assert!(!obsolete_candidate(&game, std::slice::from_ref(&root), &[]));
+        assert!(!obsolete(&game, std::slice::from_ref(&root), &[]));
         game.favorite = false;
         game.installations[0].launcher = Launcher::Manual;
-        assert!(!obsolete_candidate(&game, std::slice::from_ref(&root), &[]));
+        assert!(!obsolete(&game, std::slice::from_ref(&root), &[]));
         game.installations[0].launcher = Launcher::Unknown;
         game.installations.push(Installation {
             path: root.join("unplugged"),
             ..game.installations[0].clone()
         });
-        assert!(!obsolete_candidate(&game, std::slice::from_ref(&root), &[]));
+        assert!(!obsolete(&game, std::slice::from_ref(&root), &[]));
         game.installations.pop();
         game.title = "Adventure".into();
-        assert!(!obsolete_candidate(&game, std::slice::from_ref(&root), &[]));
+        assert!(!obsolete(&game, std::slice::from_ref(&root), &[]));
         let path = root.join("Database.gen");
         fs::write(&path, b"not a ROM").unwrap();
         game.installations[0].path = path;
-        assert!(obsolete_candidate(&game, std::slice::from_ref(&root), &[]));
+        assert!(obsolete(&game, std::slice::from_ref(&root), &[]));
         game.installations.push(Installation {
             path: root,
             ..game.installations[0].clone()
         });
-        assert!(!obsolete_candidate(
-            &game,
-            &[temp.path().to_path_buf()],
-            &[]
-        ));
+        assert!(!obsolete(&game, &[temp.path().to_path_buf()], &[]));
     }
 
     #[test]

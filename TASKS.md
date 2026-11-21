@@ -87,5 +87,6 @@ Une tâche à la fois : comprendre, modifier, vérifier les critères, puis cré
 81. [x] Valider la structure AppState de Steam, l’identifiant et le dossier d’installation ; préserver les titres Unicode et les chaînes échappées.
 82. [x] Filtrer les dossiers d’installation connus des outils de développement, de bureautique et du système qui encombrent encore la liste des candidats.
 83. [x] Distinguer les bases SQL Server et les fichiers vides ou trop courts des images disque MDF.
+84. [x] Masquer les anciens candidats PC internes aux jeux reconnus à la fin du scan et conserver les fiches promues par un manifeste.
 
 Critères : formatage, tests concernés, `cargo test`, Clippy sans avertissement. Chaque lot autonome produit un commit séparé. Le pipeline CI exécute ces contrôles et construit les deux paquets à chaque push ou pull request.
