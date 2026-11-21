@@ -552,6 +552,23 @@ fn known_application_path(path: &Path) -> bool {
                     | "amd"
                     | "gigabyte"
                     | "bravesoftware"
+                    | "openssl-win64"
+                    | "git"
+                    | "libreoffice"
+                    | "postgresql"
+                    | "docker"
+                    | "dotnet"
+                    | "java"
+                    | "microsoft sql server"
+                    | "obs-studio"
+                    | "mozilla firefox"
+                    | "librewolf"
+                    | "stirling pdf"
+                    | "windows defender"
+                    | "windows defender advanced threat protection"
+                    | "windows media player"
+                    | "wsl"
+                    | "internet explorer"
             )
         })
     })
@@ -735,6 +752,23 @@ mod tests {
             "Program Files/AMD/CNext/CNext",
             "program files/GIGABYTE/Control Center/Lib",
             "Program Files (x86)/BraveSoftware/Update/1.0",
+            "Program Files/OpenSSL-Win64/bin",
+            "Program Files/Git/mingw64/bin",
+            "Program Files/LibreOffice/program",
+            "Program Files/PostgreSQL/17/bin",
+            "Program Files/Docker/Docker/resources",
+            "Program Files/dotnet/shared",
+            "Program Files/Java/bin",
+            "Program Files/Microsoft SQL Server/Tools",
+            "Program Files/obs-studio/bin/64bit",
+            "Program Files/Mozilla Firefox",
+            "Program Files/LibreWolf",
+            "Program Files/Stirling PDF",
+            "Program Files/Windows Defender",
+            "Program Files/Windows Defender Advanced Threat Protection",
+            "Program Files (x86)/Windows Media Player",
+            "Program Files/WSL",
+            "Program Files (x86)/Internet Explorer",
         ] {
             let folder = temp.path().join(relative);
             fs::create_dir_all(&folder).unwrap();
@@ -766,6 +800,8 @@ mod tests {
             "Games/Microsoft Office",
             "Program Files/My Game",
             "Program Files/AMD Adventure",
+            "Games/Git",
+            "Program Files/Java Adventure",
         ] {
             let folder = temp.path().join(relative);
             fs::create_dir_all(&folder).unwrap();

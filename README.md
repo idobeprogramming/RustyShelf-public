@@ -39,6 +39,8 @@ Lors du scan d’un dossier personnalisé, les manifestes Steam/GOG sont lus ava
 
 La lecture Steam vérifie le bloc `AppState`, ses champs directs, les accolades et la concordance entre l’identifiant du jeu et le nom du manifeste. Les champs d’un sous-bloc ne remplacent pas le titre ou le dossier du jeu. Un chemin d’installation réduit à `.` est refusé pour ne pas considérer toute la bibliothèque comme un seul jeu.
 
+Le filtre des applications Windows couvre aussi des dossiers d’installation connus comme Git, OpenSSL, LibreOffice, PostgreSQL, Docker, Java et .NET. Un nouveau scan du disque concerné masque les anciens candidats de ces dossiers dans les mêmes conditions que les autres faux positifs.
+
 ## Windows
 
 Installer Rust stable et les outils de compilation C++ de Visual Studio, puis :

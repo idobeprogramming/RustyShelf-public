@@ -85,5 +85,6 @@ Une tâche à la fois : comprendre, modifier, vérifier les critères, puis cré
 79. [x] Valider le contenu SMD, RVZ, GCZ et WBFS ; partager les contrôles entre découverte et nettoyage des anciens candidats.
 80. [x] Lire les manifestes locaux avant les fichiers internes des jeux et éviter les candidats parasites, sans masquer les autres manifestes ni les dossiers voisins.
 81. [x] Valider la structure AppState de Steam, l’identifiant et le dossier d’installation ; préserver les titres Unicode et les chaînes échappées.
+82. [x] Filtrer les dossiers d’installation connus des outils de développement, de bureautique et du système qui encombrent encore la liste des candidats.
 
 Critères : formatage, tests concernés, `cargo test`, Clippy sans avertissement. Chaque lot autonome produit un commit séparé. Le pipeline CI exécute ces contrôles et construit les deux paquets à chaque push ou pull request.
