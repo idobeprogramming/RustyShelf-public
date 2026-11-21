@@ -15,6 +15,16 @@ use std::{
     sync::mpsc::{self, Receiver},
 };
 
+const LAST_SCAN_REVIEW: &str = "review:last-scan";
+
+fn scan_outcome(language: Language, cancelled: bool) -> &'static str {
+    if cancelled {
+        tr(language, "Scan interrompu", "Scan interrupted")
+    } else {
+        tr(language, "Scan terminé", "Scan complete")
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Language {
     French,
@@ -466,7 +476,11 @@ impl RustyShelfApp {
         let ids: Vec<String> = self
             .games
             .iter()
-            .filter(|game| !game.confirmed && self.review_selection.contains(&game.id))
+            .filter(|game| {
+                !game.confirmed
+                    && self.matches_category(game)
+                    && self.review_selection.contains(&game.id)
+            })
             .map(|game| game.id.clone())
             .collect();
         if ids.is_empty() {
@@ -876,6 +890,9 @@ impl RustyShelfApp {
         });
         self.scan_control = Some(control);
         self.scan_receiver = Some(receiver);
+        if self.selected_category == LAST_SCAN_REVIEW {
+            self.selected_category = "À confirmer".into();
+        }
         self.scan_visited = 0;
         self.scan_current.clear();
         self.diagnostics = ScanDiagnostics {
@@ -980,7 +997,12 @@ impl RustyShelfApp {
                             }
                         }
                     }
+                    let before = self.games.len();
+                    let id = game.id.clone();
                     merge_game_in_memory(&mut self.games, game);
+                    if self.games.len() > before {
+                        self.diagnostics.added_game_ids.insert(id);
+                    }
                 }
                 ScanEvent::Progress(progress) => {
                     self.scan_visited = progress.visited;
@@ -1022,6 +1044,10 @@ impl RustyShelfApp {
                     }
                     self.scan_control = None;
                     self.scan_receiver = None;
+                    let visible_ids: HashSet<_> = self.games.iter().map(|game| &game.id).collect();
+                    self.diagnostics
+                        .added_game_ids
+                        .retain(|id| visible_ids.contains(id));
                     if let Some(store) = &self.store {
                         if let Ok(json) = serde_json::to_string(&self.diagnostics) {
                             if let Err(error) = store.set_preference("last_scan_diagnostics", &json)
@@ -1030,43 +1056,7 @@ impl RustyShelfApp {
                             }
                         }
                     }
-                    self.status = if cancelled {
-                        format!(
-                            "{} {visited} {}",
-                            tr(self.language, "Scan arrêté ·", "Scan stopped ·"),
-                            tr(self.language, "éléments parcourus", "items scanned")
-                        )
-                    } else {
-                        format!(
-                            "{} {} {} {visited} {}",
-                            tr(self.language, "Scan terminé ·", "Scan complete ·"),
-                            self.games.len(),
-                            tr(self.language, "jeux ·", "games ·"),
-                            tr(self.language, "éléments parcourus", "items scanned")
-                        )
-                    };
-                    if self.diagnostics.filtered_count > 0 {
-                        self.status.push_str(&format!(
-                            " · {} {}",
-                            self.diagnostics.filtered_count,
-                            tr(
-                                self.language,
-                                "ancien(s) candidat(s) masqué(s)",
-                                "old candidate(s) hidden"
-                            )
-                        ));
-                    }
-                    if self.diagnostics.error_count > 0 {
-                        self.status.push_str(&format!(
-                            " · {} {}",
-                            self.diagnostics.error_count,
-                            tr(
-                                self.language,
-                                "erreur(s) · voir le rapport",
-                                "error(s) · see report"
-                            )
-                        ));
-                    }
+                    self.status = scan_outcome(self.language, cancelled).into();
                 }
             }
         }
@@ -1273,7 +1263,9 @@ impl RustyShelfApp {
                         ] {
                             if ui
                                 .selectable_label(
-                                    self.selected_category == key,
+                                    self.selected_category == key
+                                        || (key == "À confirmer"
+                                            && self.selected_category == LAST_SCAN_REVIEW),
                                     format!("{icon}  {}  {count}", tr(self.language, key, english)),
                                 )
                                 .clicked()
@@ -1361,6 +1353,82 @@ impl RustyShelfApp {
                 });
             });
     }
+    fn open_last_scan_candidates(&mut self) {
+        self.selected_category = LAST_SCAN_REVIEW.into();
+        self.selected_game = None;
+        self.review_selection.clear();
+        self.search.clear();
+        self.filters = Filters {
+            sort: self.filters.sort,
+            ..Filters::default()
+        };
+    }
+
+    fn scan_summary(&mut self, ui: &mut egui::Ui) -> bool {
+        if self.scan_control.is_some() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(format!(
+                    "{} {}",
+                    self.scan_visited,
+                    tr(self.language, "éléments parcourus", "items scanned")
+                ));
+                if !self.scan_current.is_empty() {
+                    ui.add(egui::Label::new(&self.scan_current).truncate())
+                        .on_hover_text(&self.scan_current);
+                }
+            });
+            return false;
+        }
+        let Some(cancelled) = self.diagnostics.cancelled else {
+            return false;
+        };
+        let pending = self
+            .games
+            .iter()
+            .filter(|game| !game.confirmed && self.diagnostics.added_game_ids.contains(&game.id))
+            .count();
+        let mut navigate = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.strong(scan_outcome(self.language, cancelled));
+            ui.small(format!(
+                "{} {} · {} {}",
+                self.diagnostics.added_game_ids.len(),
+                tr(self.language, "fiche(s) ajoutée(s)", "item(s) added"),
+                self.diagnostics.filtered_count,
+                tr(
+                    self.language,
+                    "candidat(s) masqué(s)",
+                    "candidate(s) hidden"
+                )
+            ));
+            if self.diagnostics.error_count > 0 {
+                ui.small(format!(
+                    "{} {}",
+                    self.diagnostics.error_count,
+                    tr(
+                        self.language,
+                        "erreur(s) dans le rapport",
+                        "error(s) in report"
+                    )
+                ));
+            }
+            if self.selected_category != LAST_SCAN_REVIEW
+                && pending > 0
+                && ui
+                    .small_button(format!(
+                        "{} ({pending})",
+                        tr(self.language, "Nouveaux à confirmer", "New candidates")
+                    ))
+                    .clicked()
+            {
+                self.open_last_scan_candidates();
+                navigate = true;
+            }
+        });
+        navigate
+    }
+
     fn content(&mut self, ctx: &egui::Context) {
         let accent = self
             .active_style()
@@ -1453,19 +1521,15 @@ impl RustyShelfApp {
                 "Favoris" => tr(self.language, "Favoris", "Favorites"),
                 "Installés" => tr(self.language, "Jeux disponibles", "Available games"),
                 "À confirmer" => tr(self.language, "À confirmer", "To review"),
+                LAST_SCAN_REVIEW => tr(self.language, "À confirmer · Dernier scan", "To review · Last scan"),
                 other => other.strip_prefix("console:").unwrap_or(other),
             };
             ui.label(RichText::new(title).size(28.0).strong().color(text));
             ui.label(
                 RichText::new(format!(
-                    "{} {} · {}",
+                    "{} {}",
                     filtered.len(),
                     tr(self.language, "résultat(s)", "result(s)"),
-                    tr(
-                        self.language,
-                        "Votre collection, sur votre ordinateur.",
-                        "Your collection, on your computer."
-                    )
                 ))
                 .size(12.0)
                 .color(muted),
@@ -1502,8 +1566,17 @@ impl RustyShelfApp {
                 }
             });
             self.filter_bar(ui);
-            if self.selected_category == "À confirmer" {
+            if self.scan_summary(ui) {
+                ctx.request_repaint();
+                return;
+            }
+            if matches!(self.selected_category.as_str(), "À confirmer" | LAST_SCAN_REVIEW) {
                 ui.horizontal_wrapped(|ui| {
+                    if self.selected_category == LAST_SCAN_REVIEW && ui.button(tr(self.language,
+                        "Tous les candidats", "All candidates")).clicked() {
+                        self.selected_category = "À confirmer".into();
+                        self.review_selection.clear();
+                    }
                     if ui.button(tr(self.language, "Sélectionner les résultats", "Select results")).clicked() {
                         self.review_selection = review_ids.iter().map(|id| (*id).clone()).collect();
                     }
@@ -1528,36 +1601,25 @@ impl RustyShelfApp {
                 self.category_emulator_ui(ui, &console);
             }
             ui.add_space(8.0);
-            if self.scan_control.is_some() {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(format!(
-                        "{} {}",
-                        self.scan_visited,
-                        tr(self.language, "éléments parcourus", "items scanned")
-                    ));
-                });
-            }
             ui.separator();
             if filtered.is_empty() {
                 ui.vertical_centered(|ui| {
                     ui.add_space(55.0);
                     ui.label(RichText::new("▦").size(42.0).color(accent));
+                    let has_games_in_view = self.games.iter().any(|game| self.matches_category(game));
+                    let empty_title = if has_games_in_view {
+                        tr(self.language, "Aucun résultat pour ces filtres", "No results with these filters")
+                    } else if matches!(self.selected_category.as_str(), "À confirmer" | LAST_SCAN_REVIEW) {
+                        tr(self.language, "Aucun candidat à confirmer", "No candidates to review")
+                    } else {
+                        tr(self.language, "Aucun jeu dans cette vue", "No games in this view")
+                    };
                     ui.label(
-                        RichText::new(tr(
-                            self.language,
-                            "Une place pour chaque aventure",
-                            "A place for every adventure",
-                        ))
+                        RichText::new(empty_title)
                         .size(20.0)
                         .color(text),
                     );
-                    ui.label(tr(
-                        self.language,
-                        "Aucun jeu dans cette vue. Ajuste les filtres ou ajoute un jeu.",
-                        "No games in this view. Adjust filters or add a game.",
-                    ));
-                    if ui
+                    if has_games_in_view && ui
                         .button(tr(
                             self.language,
                             "Réinitialiser les filtres",
@@ -1568,7 +1630,8 @@ impl RustyShelfApp {
                         self.filters = Filters::default();
                         self.search.clear();
                     }
-                    if self.games.iter().any(|game| !game.confirmed)
+                    if !matches!(self.selected_category.as_str(), "À confirmer" | LAST_SCAN_REVIEW)
+                        && self.games.iter().any(|game| !game.confirmed)
                         && ui
                             .button(tr(
                                 self.language,
@@ -1820,6 +1883,9 @@ impl RustyShelfApp {
         });
     }
     fn matches_category(&self, game: &Game) -> bool {
+        if self.selected_category == LAST_SCAN_REVIEW {
+            return !game.confirmed && self.diagnostics.added_game_ids.contains(&game.id);
+        }
         // Discovery candidates belong exclusively to the review queue, including
         // old extension-only ROM detections already stored in the library.
         if !game.confirmed {
@@ -3463,7 +3529,7 @@ mod tests {
         assert_eq!(app.diagnostics.filtered_count, 1);
         assert_eq!(app.diagnostics.error_count, 0);
         assert_eq!(app.games.len(), 4);
-        assert!(app.status.contains("1 ancien(s) candidat(s) masqué(s)"));
+        assert_eq!(app.status, "Scan terminé");
         let store = app.store.as_ref().unwrap();
         assert!(store.is_ignored(&ids[0]).unwrap());
         store.restore_ignored_game(&ids[0]).unwrap();
@@ -3574,6 +3640,89 @@ mod tests {
                 .unwrap()
                 .installations[0]
                 .available
+        );
+    }
+
+    #[test]
+    fn last_scan_review_only_lists_new_saved_candidates_even_after_interruption() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        let make = |title: &str, launcher| {
+            Game::from_installation(
+                title,
+                "ROM · NES",
+                Installation {
+                    path: temp.path().join(format!("{title}.nes")),
+                    launcher,
+                    launch_profile: None,
+                    available: true,
+                },
+            )
+        };
+        let old = make("Ancien", Launcher::Unknown);
+        let hidden = make("Ignoré", Launcher::Unknown);
+        let new = make("Nouveau", Launcher::Unknown);
+        let official = make("Reconnu", Launcher::Steam);
+        for game in [&old, &hidden] {
+            store.save_game(game).unwrap();
+        }
+        store.ignore_game(&hidden.id).unwrap();
+        let mut app = test_app();
+        app.selected_category = "Tous les jeux".into();
+        app.games = store.games().unwrap();
+        app.store = Some(store);
+        let (sender, receiver) = mpsc::sync_channel(8);
+        for game in [&old, &new, &new, &hidden, &official] {
+            sender.send(ScanEvent::Candidate(game.clone())).unwrap();
+        }
+        sender
+            .send(ScanEvent::Finished {
+                visited: 20,
+                cancelled: true,
+            })
+            .unwrap();
+        app.scan_control = Some(ScanControl::default());
+        app.scan_receiver = Some(receiver);
+        app.poll_scan(&egui::Context::default());
+        assert_eq!(app.selected_category, "Tous les jeux");
+        assert_eq!(
+            app.diagnostics.added_game_ids,
+            [new.id.clone(), official.id.clone()].into()
+        );
+
+        let json = app
+            .store
+            .as_ref()
+            .unwrap()
+            .preference("last_scan_diagnostics")
+            .unwrap()
+            .unwrap();
+        app.diagnostics = serde_json::from_str(&json).unwrap();
+        app.search = "indésirable".into();
+        app.filters.kind = GameKind::Pc;
+        app.filters.sort = Sort::ReverseName;
+        app.open_last_scan_candidates();
+        assert!(app.search.is_empty());
+        assert_eq!(app.filters.kind, GameKind::All);
+        assert_eq!(app.filters.sort, Sort::ReverseName);
+        assert_eq!(
+            app.games
+                .iter()
+                .filter(|game| app.matches_category(game))
+                .map(|game| &game.id)
+                .collect::<Vec<_>>(),
+            [&new.id]
+        );
+        app.review_selection
+            .extend([new.id.clone(), old.id.clone()]);
+        app.apply_review_selection(ReviewAction::Confirm);
+        assert!(!app.games.iter().any(|game| app.matches_category(game)));
+        assert!(
+            !app.games
+                .iter()
+                .find(|game| game.id == old.id)
+                .unwrap()
+                .confirmed
         );
     }
 
