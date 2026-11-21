@@ -41,6 +41,8 @@ La lecture Steam vérifie le bloc `AppState`, ses champs directs, les accolades 
 
 Le filtre des applications Windows couvre aussi des dossiers d’installation connus comme Git, OpenSSL, LibreOffice, PostgreSQL, Docker, Java et .NET. Un nouveau scan du disque concerné masque les anciens candidats de ces dossiers dans les mêmes conditions que les autres faux positifs.
 
+Pour les fichiers `.mdf`, le scan écarte aussi les bases SQL Server identifiées par leurs en-têtes et les fichiers trop courts pour contenir un secteur de disque. Les images candidates doivent toujours avoir leur fichier `.mds` associé.
+
 ## Windows
 
 Installer Rust stable et les outils de compilation C++ de Visual Studio, puis :

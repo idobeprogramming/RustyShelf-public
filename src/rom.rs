@@ -147,6 +147,7 @@ fn checked_header(path: &Path) -> std::io::Result<Option<bool>> {
         .unwrap_or("")
         .to_ascii_lowercase();
     let minimum = match extension.as_str() {
+        "mdf" => return Ok(mdf_is_not_disc(path)?.then_some(false)),
         "nes" => 16,
         "n64" | "z64" | "v64" => 64,
         "3ds" | "cci" => 512,
@@ -190,6 +191,36 @@ fn checked_header(path: &Path) -> std::io::Result<Option<bool>> {
         "wbfs" => header.starts_with(b"WBFS"),
         _ => unreachable!(),
     }))
+}
+
+fn mdf_is_not_disc(path: &Path) -> std::io::Result<bool> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    const DISC_SECTOR: u64 = 2048;
+    const BOOT_PAGE_OFFSET: u64 = 9 * 8192;
+    const PAGE_ID_OFFSET: usize = 32;
+    let mut file = std::fs::File::open(path)?;
+    let length = file.metadata()?.len();
+    if length < DISC_SECTOR {
+        // An optical image must contain at least one sector.
+        return Ok(true);
+    }
+
+    // SQL Server MDF shares the extension. Its primary file starts with a
+    // file header page (type 15) and has a boot page (type 13) at page 9.
+    // Require both typed headers and their page IDs to avoid guessing from
+    // the filename or classifying an image with a missing MDS as invalid.
+    let mut header = [0; PAGE_ID_OFFSET + 6];
+    if length < BOOT_PAGE_OFFSET + header.len() as u64 {
+        return Ok(false);
+    }
+    file.read_exact(&mut header)?;
+    if !header.starts_with(&[1, 15]) || header[PAGE_ID_OFFSET..] != [0, 0, 0, 0, 1, 0] {
+        return Ok(false);
+    }
+    file.seek(SeekFrom::Start(BOOT_PAGE_OFFSET))?;
+    file.read_exact(&mut header)?;
+    Ok(header.starts_with(&[1, 13]) && header[PAGE_ID_OFFSET..] == [9, 0, 0, 0, 1, 0])
 }
 
 fn in_rom_folder(path: &Path) -> bool {
@@ -423,7 +454,7 @@ mod tests {
         std::fs::create_dir(&roms).unwrap();
         std::fs::create_dir(&apps).unwrap();
         for folder in [&roms, &apps] {
-            std::fs::write(folder.join("Database.mdf"), b"data").unwrap();
+            std::fs::write(folder.join("Database.mdf"), [0; 2048]).unwrap();
             assert!(!scan_candidate(&folder.join("Database.mdf")));
             std::fs::write(folder.join("Database.mds"), b"descriptor").unwrap();
         }
@@ -433,6 +464,44 @@ mod tests {
         assert!(!scan_candidate(&roms.join("Adventure.smd")));
         assert!(!scan_candidate(&temp.path().join("Games/Setup.iso")));
         assert!(scan_candidate(&roms.join("Adventure.iso")));
+    }
+
+    #[test]
+    fn mdf_cleanup_requires_database_headers_or_a_file_too_short_for_a_sector() {
+        let temp = tempfile::tempdir().unwrap();
+        let roms = temp.path().join("roms");
+        std::fs::create_dir(&roms).unwrap();
+        let path = roms.join("Été.mdf");
+        assert!(!invalid_existing_header(&path));
+
+        let mut bytes = vec![0; 10 * 8192];
+        bytes[..2].copy_from_slice(&[1, 15]);
+        bytes[32..38].copy_from_slice(&[0, 0, 0, 0, 1, 0]);
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(
+            !invalid_existing_header(&path),
+            "one matching page is insufficient"
+        );
+        assert!(
+            !scan_candidate(&path),
+            "an unfamiliar MDF still needs a companion"
+        );
+        std::fs::write(path.with_extension("MDS"), b"descriptor").unwrap();
+        assert!(scan_candidate(&path));
+
+        let boot_page = &mut bytes[9 * 8192..];
+        boot_page[..2].copy_from_slice(&[1, 13]);
+        boot_page[32..38].copy_from_slice(&[9, 0, 0, 0, 1, 0]);
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(invalid_existing_header(&path));
+        assert!(
+            !scan_candidate(&path),
+            "a companion cannot turn SQL data into a disc"
+        );
+
+        std::fs::write(&path, b"\r\n").unwrap();
+        assert!(invalid_existing_header(&path));
+        assert!(!scan_candidate(&path));
     }
 
     #[test]
