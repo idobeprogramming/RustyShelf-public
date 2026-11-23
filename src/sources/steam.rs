@@ -1,6 +1,10 @@
+mod appinfo;
+
 use crate::model::{Game, Installation, LaunchProfile, Launcher};
 use crate::scan::{ScanControl, ScanEvent};
 use std::{
+    cell::RefCell,
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -100,6 +104,13 @@ pub fn is_manifest(path: &Path) -> bool {
 }
 
 pub fn read_manifest(path: &Path) -> Result<Option<Game>, String> {
+    read_manifest_with_title_lookup(path, cached_title)
+}
+
+fn read_manifest_with_title_lookup(
+    path: &Path,
+    lookup: impl FnOnce(&Path, u32) -> Option<String>,
+) -> Result<Option<Game>, String> {
     let text = super::read_manifest_text(path)?;
     let tokens = vdf_tokens(&text)?;
     let fields = app_state_fields(&tokens)?;
@@ -132,6 +143,24 @@ pub fn read_manifest(path: &Path) -> Result<Option<Game>, String> {
     if !install.is_dir() {
         return Ok(None);
     }
+    let name = if placeholder_title(&name) {
+        app_id
+            .parse::<u32>()
+            .ok()
+            .and_then(|id| lookup(path, id))
+            .filter(|title| !placeholder_title(title))
+            .or_else(|| {
+                let folder = install.file_name()?.to_str()?.trim();
+                (!folder.is_empty()
+                    && !placeholder_title(folder)
+                    && !folder.bytes().all(|byte| byte.is_ascii_digit()))
+                .then(|| folder.replace('_', " "))
+                .filter(|title| !title.trim().is_empty())
+            })
+            .unwrap_or_else(|| format!("Steam · {app_id}"))
+    } else {
+        name
+    };
     Ok(Some(Game::from_installation(
         name,
         "Steam",
@@ -147,6 +176,44 @@ pub fn read_manifest(path: &Path) -> Result<Option<Game>, String> {
             available: true,
         },
     )))
+}
+
+fn placeholder_title(title: &str) -> bool {
+    title.trim().rsplit_once('_').is_some_and(|(label, id)| {
+        (label.eq_ignore_ascii_case("appid") || label.eq_ignore_ascii_case("app_id"))
+            && super::numeric_id(id)
+    })
+}
+
+type AppTitles = HashMap<u32, String>;
+
+thread_local! {
+    // A new worker is created for each scan, so multiple placeholder manifests
+    // reuse each cache without keeping its contents between scans.
+    static APPINFO_TITLES: RefCell<HashMap<PathBuf, AppTitles>> = RefCell::new(HashMap::new());
+}
+
+fn cached_title(manifest: &Path, app_id: u32) -> Option<String> {
+    manifest
+        .parent()
+        .map(Path::to_path_buf)
+        .into_iter()
+        .chain(default_steamapps())
+        .filter_map(|steamapps| {
+            steamapps
+                .parent()
+                .map(|root| root.join("appcache/appinfo.vdf"))
+        })
+        .find_map(|cache| {
+            APPINFO_TITLES.with_borrow_mut(|titles| {
+                titles
+                    .entry(cache)
+                    .or_insert_with_key(|path| appinfo::read_titles(path))
+                    .get(&app_id)
+                    .filter(|name| !placeholder_title(name))
+                    .cloned()
+            })
+        })
 }
 
 fn library_paths(text: &str) -> Result<Vec<PathBuf>, String> {
@@ -280,6 +347,27 @@ pub(super) fn default_steamapps() -> Vec<PathBuf> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn placeholder_manifest_uses_installed_folder_or_steam_id_when_cache_is_missing() {
+        let temp = tempdir().unwrap();
+        let library = temp.path().join("steamapps");
+        let manifest = library.join("appmanifest_42.acf");
+        for (directory, expected) in [
+            ("Étoiles_Adventure", "Étoiles Adventure"),
+            ("appid_42", "Steam · 42"),
+            ("42", "Steam · 42"),
+        ] {
+            fs::create_dir_all(library.join("common").join(directory)).unwrap();
+            fs::write(&manifest, format!(
+                "\"AppState\" {{ \"appid\" \"42\" \"name\" \"APPID_42\" \"installdir\" \"{directory}\" }}"
+            )).unwrap();
+            let game = read_manifest_with_title_lookup(&manifest, |_, _| None)
+                .unwrap()
+                .unwrap();
+            assert_eq!(game.title, expected);
+        }
+    }
 
     #[test]
     fn manifest_fields_must_belong_to_app_state_and_match_the_filename() {

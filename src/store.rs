@@ -600,6 +600,44 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn steam_rescan_repairs_a_saved_placeholder_and_keeps_edits_after_restart() {
+        let temp = tempdir().unwrap();
+        let db = temp.path().join("library.db");
+        let library = temp.path().join("steamapps");
+        let install = library.join("common/Lune");
+        fs::create_dir_all(&install).unwrap();
+        let manifest = library.join("appmanifest_4294967294.acf");
+        fs::write(
+            &manifest,
+            r#""AppState" { "appid" "4294967294" "name" "APP_ID_4294967294" "installdir" "Lune" }"#,
+        )
+        .unwrap();
+        let mut rescanned = crate::sources::from_manifest(&manifest).unwrap().unwrap();
+        assert_eq!(rescanned.title, "Lune");
+        let old = Game::from_installation(
+            "appid_4294967294",
+            "Steam",
+            rescanned.installations[0].clone(),
+        );
+        let store = Store::open(&db).unwrap();
+        store.save_game(&old).unwrap();
+        store.set_favorite(&old.id, true).unwrap();
+        store.set_title(&old.id, "Ma lune").unwrap();
+        store.reuse_installation_identity(&mut rescanned).unwrap();
+        store.save_game(&rescanned).unwrap();
+        drop(store);
+
+        let store = Store::open(db).unwrap();
+        let games = store.games().unwrap();
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].title, "Ma lune");
+        assert!(games[0].favorite);
+        assert_eq!(games[0].installations, rescanned.installations);
+        store.reset_title(&games[0].id).unwrap();
+        assert_eq!(store.games().unwrap()[0].title, "Lune");
+    }
+
+    #[test]
     fn automatic_candidate_cleanup_preserves_user_changes_and_is_reversible() {
         let temp = tempdir().unwrap();
         let store = Store::open(temp.path().join("library.db")).unwrap();
