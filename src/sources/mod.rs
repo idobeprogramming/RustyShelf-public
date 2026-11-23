@@ -4,9 +4,43 @@ mod heroic;
 mod lutris;
 mod steam;
 
-use crate::model::Game;
+use crate::model::{Game, Installation, Launcher};
 use crate::scan::{ScanControl, ScanEvent, ScanProgress};
 use std::path::{Path, PathBuf};
+
+const STEAM_SHARED_REDIST_ID: &str = "228980";
+
+pub fn is_launcher_component(installation: &Installation) -> bool {
+    match installation.launcher {
+        Launcher::Gog => gog::installer_cache(&installation.path),
+        Launcher::Steam => {
+            installation
+                .launch_profile
+                .as_ref()
+                .and_then(|profile| profile.launcher_command.as_deref())
+                .and_then(|uri| uri.strip_prefix("steam://rungameid/"))
+                == Some(STEAM_SHARED_REDIST_ID)
+        }
+        _ => false,
+    }
+}
+
+pub fn is_shared_runtime_art(path: &Path) -> bool {
+    path.ancestors().any(|entry| {
+        entry
+            .parent()
+            .is_some_and(|parent| parent.ends_with("appcache/librarycache"))
+            && entry
+                .file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| {
+                    name == STEAM_SHARED_REDIST_ID
+                        || name
+                            .split_once('_')
+                            .is_some_and(|(id, _)| id == STEAM_SHARED_REDIST_ID)
+                })
+    })
+}
 
 pub fn steam_cache_roots() -> Vec<PathBuf> {
     steam::default_steamapps()

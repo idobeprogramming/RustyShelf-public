@@ -66,6 +66,10 @@ pub fn is_manifest(path: &Path) -> bool {
 }
 
 pub fn read_manifest(path: &Path) -> Result<Option<Game>, String> {
+    let install = path.parent().ok_or("Dossier GOG manquant")?;
+    if installer_cache(install) {
+        return Ok(None);
+    }
     let text = super::read_manifest_text(path)?;
     let json: serde_json::Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
     let title = json
@@ -85,7 +89,6 @@ pub fn read_manifest(path: &Path) -> Result<Option<Game>, String> {
     {
         return Err("Identifiant GOG différent du nom du manifeste".into());
     }
-    let install = path.parent().ok_or("Dossier GOG manquant")?.to_owned();
     // The primary game task is authoritative; never pick the first .exe in a folder.
     let task = json
         .get("playTasks")
@@ -100,19 +103,27 @@ pub fn read_manifest(path: &Path) -> Result<Option<Game>, String> {
                         .is_none_or(|category| matches!(category, "game" | "launcher"))
             })
         });
+    if task.is_none()
+        && json
+            .get("rootGameId")
+            .and_then(|value| value.as_str())
+            .is_some_and(|root| super::numeric_id(root) && root != id)
+    {
+        return Ok(None);
+    }
     let profile = if let Some(task) = task {
         let value = task
             .get("path")
             .and_then(|value| value.as_str())
             .ok_or("Commande GOG manquante")?;
-        let command = super::relative_path(&install, value)?;
+        let command = super::relative_path(install, value)?;
         let workdir = task
             .get("workingDir")
             .and_then(|value| value.as_str())
             .filter(|value| !value.is_empty());
         let working_directory = Some(match workdir {
-            Some(value) => super::relative_path(&install, value)?,
-            None => install.clone(),
+            Some(value) => super::relative_path(install, value)?,
+            None => install.to_owned(),
         });
         let arguments = split_arguments(
             task.get("arguments")
@@ -140,7 +151,7 @@ pub fn read_manifest(path: &Path) -> Result<Option<Game>, String> {
         title,
         "GOG",
         Installation {
-            path: install,
+            path: install.to_owned(),
             launcher: Launcher::Gog,
             launch_profile: profile,
             available: true,
@@ -148,9 +159,50 @@ pub fn read_manifest(path: &Path) -> Result<Option<Game>, String> {
     )))
 }
 
+pub(super) fn installer_cache(install: &Path) -> bool {
+    // Galaxy keeps a second copy of the product manifest here, even when the
+    // game no longer exists. A real installation has its own manifest.
+    install
+        .file_name()
+        .and_then(|part| part.to_str())
+        .is_some_and(super::numeric_id)
+        && install.parent().is_some_and(|cache| {
+            cache
+                .file_name()
+                .is_some_and(|name| name.eq_ignore_ascii_case("supportInstaller"))
+                && cache
+                    .parent()
+                    .and_then(Path::file_name)
+                    .is_some_and(|vendor| vendor.eq_ignore_ascii_case("GOG.com"))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn separates_gog_games_and_standalone_expansions_from_addons_and_cache_copies() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = temp.path().join("goggame-42.info");
+        let mut data = serde_json::json!({"gameId":"42", "rootGameId":"42", "name":"Lune"});
+        fs::write(&manifest, data.to_string()).unwrap();
+        assert!(read_manifest(&manifest).unwrap().is_some());
+        data["rootGameId"] = "10".into();
+        fs::write(&manifest, data.to_string()).unwrap();
+        assert!(read_manifest(&manifest).unwrap().is_none());
+        data["playTasks"] = serde_json::json!([{"isPrimary":true, "type":"FileTask", "category":"game", "path":"play"}]);
+        fs::write(temp.path().join("play"), []).unwrap();
+        fs::write(&manifest, data.to_string()).unwrap();
+        assert!(read_manifest(&manifest).unwrap().unwrap().installations[0]
+            .launch_profile
+            .is_some());
+        let cache = temp.path().join("GOG.com/supportInstaller/42");
+        fs::create_dir_all(&cache).unwrap();
+        let cached = cache.join("goggame-42.info");
+        fs::write(&cached, data.to_string()).unwrap();
+        assert!(read_manifest(&cached).unwrap().is_none());
+    }
+
     #[test]
     fn selects_primary_task_and_keeps_quoted_arguments_without_running_it() {
         let temp = tempfile::tempdir().unwrap();

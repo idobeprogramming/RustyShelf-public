@@ -140,7 +140,7 @@ fn read_manifest_with_title_lookup(
     {
         return Err("Le manifeste Steam doit désigner un dossier de jeu".into());
     }
-    if !install.is_dir() {
+    if app_id == super::STEAM_SHARED_REDIST_ID || !install.is_dir() {
         return Ok(None);
     }
     let name = if placeholder_title(&name) {

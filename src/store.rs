@@ -341,7 +341,9 @@ impl Store {
         // without an installation (for example after importing an older library).
         let mut statement = self.connection.prepare(
             "SELECT g.id,COALESCE(t.title,g.title),g.category,g.favorite,g.confirmed,g.cover_path,
-                    i.path,i.launcher,i.profile,i.available
+                    i.path,i.launcher,i.profile,i.available,
+                    (g.category_custom OR t.game_id IS NOT NULL OR
+                     EXISTS(SELECT 1 FROM game_emulators e WHERE e.game_id=g.id))
              FROM games g LEFT JOIN installations i ON i.game_id=g.id
              LEFT JOIN title_overrides t ON t.game_id=g.id
              WHERE EXISTS (SELECT 1 FROM ignored_games WHERE game_id=g.id)=?1
@@ -350,10 +352,14 @@ impl Store {
         )?;
         let mut rows = statement.query([ignored, candidates_only])?;
         let mut games: Vec<Game> = Vec::new();
+        let mut customized_ids = std::collections::HashSet::new();
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;
             if games.last().is_none_or(|game| game.id != id) {
                 let cover: Option<String> = row.get(5)?;
+                if row.get::<_, bool>(10)? {
+                    customized_ids.insert(id.clone());
+                }
                 games.push(Game {
                     id,
                     title: row.get(1)?,
@@ -374,6 +380,24 @@ impl Store {
                     available: row.get(9)?,
                 });
             }
+        }
+        if !ignored && !candidates_only {
+            games.retain_mut(|game| {
+                if game.installations.is_empty() {
+                    return true;
+                }
+                game.installations
+                    .retain(|installation| !crate::sources::is_launcher_component(installation));
+                // Keep personal entries, even when all their old paths pointed
+                // to installer metadata. A Steam cache image is automatic artwork.
+                !game.installations.is_empty()
+                    || game.favorite
+                    || customized_ids.contains(&game.id)
+                    || game
+                        .cover_path
+                        .as_ref()
+                        .is_some_and(|path| !crate::sources::is_shared_runtime_art(path))
+            });
         }
         Ok(games)
     }
@@ -635,6 +659,77 @@ mod tests {
         assert_eq!(games[0].installations, rescanned.installations);
         store.reset_title(&games[0].id).unwrap();
         assert_eq!(store.games().unwrap()[0].title, "Lune");
+    }
+
+    #[test]
+    fn only_real_launcher_installations_enter_the_library_after_rescan_and_restart() {
+        let temp = tempdir().unwrap();
+        let db = temp.path().join("library.db");
+        let cache = temp.path().join("GOG.com/supportInstaller");
+        let install = temp.path().join("Jeux/Lune");
+        fs::create_dir_all(&install).unwrap();
+        let gog = |title, location| {
+            Game::from_installation(
+                title,
+                "GOG",
+                Installation {
+                    path: location,
+                    launcher: Launcher::Gog,
+                    launch_profile: None,
+                    available: true,
+                },
+            )
+        };
+        let store = Store::open(&db).unwrap();
+        store.save_game(&gog("Lune", cache.join("10"))).unwrap();
+        let mut old = gog("Lune - Extension", cache.join("20"));
+        old.installations
+            .extend(gog("Lune - Extension", install.clone()).installations);
+        store.save_game(&old).unwrap();
+        let corrected = gog("Autre extension", cache.join("30"));
+        store.save_game(&corrected).unwrap();
+        store.set_title(&corrected.id, "À conserver").unwrap();
+        let shared = temp.path().join("steamapps/common/Steamworks Shared");
+        fs::create_dir_all(&shared).unwrap();
+        let manifest = temp.path().join("steamapps/appmanifest_228980.acf");
+        fs::write(&manifest, r#""AppState" { "appid" "228980" "name" "Steamworks" "installdir" "Steamworks Shared" }"#).unwrap();
+        assert!(crate::sources::from_manifest(&manifest).unwrap().is_none());
+        let mut runtime = Game::from_installation(
+            "Steamworks",
+            "Steam",
+            Installation {
+                path: shared,
+                launcher: Launcher::Steam,
+                launch_profile: Some(crate::model::LaunchProfile {
+                    command: PathBuf::new(),
+                    arguments: vec![],
+                    working_directory: None,
+                    launcher_command: Some("steam://rungameid/228980".into()),
+                }),
+                available: true,
+            },
+        );
+        runtime.cover_path = Some(temp.path().join("appcache/librarycache/228980/header.jpg"));
+        store.save_game(&runtime).unwrap();
+        let mut rediscovered = gog("Lune", install.clone());
+        store
+            .reuse_installation_identity(&mut rediscovered)
+            .unwrap();
+        store.save_game(&rediscovered).unwrap();
+        drop(store);
+        let store = Store::open(&db).unwrap();
+        let games = store.games().unwrap();
+        assert_eq!(games.len(), 2);
+        let base = games.iter().find(|g| g.title == "Lune").unwrap();
+        assert_eq!(base.installations.len(), 1);
+        assert_eq!(base.installations[0].path, install);
+        assert!(games
+            .iter()
+            .any(|g| g.title == "À conserver" && g.installations.is_empty()));
+        store
+            .set_cover(&runtime.id, Some(&temp.path().join("Perso.png")))
+            .unwrap();
+        assert!(store.games().unwrap().iter().any(|g| g.id == runtime.id));
     }
 
     #[test]

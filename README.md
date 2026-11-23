@@ -41,6 +41,10 @@ Lors du scan d’un dossier personnalisé, les manifestes Steam/GOG sont lus ava
 
 La lecture Steam vérifie le bloc `AppState`, ses champs directs, les accolades et la concordance entre l’identifiant du jeu et le nom du manifeste. Les champs d’un sous-bloc ne remplacent pas le titre ou le dossier du jeu. Un chemin d’installation réduit à `.` est refusé pour ne pas considérer toute la bibliothèque comme un seul jeu.
 
+Si Steam fournit un nom comme `appid_105600`, un nouveau scan retrouve le titre dans le cache local de Steam. En l’absence de titre dans ce cache, RustyShelf utilise le nom du dossier s’il est lisible. Un titre personnalisé reste prioritaire.
+
+Steamworks Common Redistributables, les copies de manifestes de l’installateur GOG et les extensions GOG sans commande de jeu indépendante sont écartés de la collection. Une extension GOG qui fournit sa propre commande de lancement peut avoir sa fiche.
+
 Le filtre des applications Windows couvre aussi des dossiers d’installation connus comme Git, OpenSSL, LibreOffice, PostgreSQL, Docker, Java et .NET. À la fin du scan, RustyShelf vérifie chaque ancien candidat de ces dossiers, même lorsque plusieurs outils partageaient une vignette. Le bilan compte les entrées masquées.
 
 Pour les fichiers `.mdf`, le scan écarte aussi les bases SQL Server identifiées par leurs en-têtes et les fichiers trop courts pour contenir un secteur de disque. Les images candidates doivent toujours avoir leur fichier `.mds` associé.
