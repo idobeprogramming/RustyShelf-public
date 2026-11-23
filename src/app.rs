@@ -257,6 +257,7 @@ pub struct RustyShelfApp {
     scan_roots: Vec<PathBuf>,
     scan_exclusions: Vec<PathBuf>,
     scan_seen_paths: Vec<PathBuf>,
+    scan_seen_ids: HashSet<String>,
     diagnostics: ScanDiagnostics,
     cover_textures: HashMap<String, (PathBuf, Option<TextureHandle>)>,
     cover_refresh: Option<crate::covers::Refresh>,
@@ -398,6 +399,7 @@ impl RustyShelfApp {
             scan_roots: Vec::new(),
             scan_exclusions: Vec::new(),
             scan_seen_paths: Vec::new(),
+            scan_seen_ids: HashSet::new(),
             diagnostics,
             cover_textures: HashMap::new(),
             cover_refresh: None,
@@ -755,27 +757,31 @@ impl RustyShelfApp {
         if self.scan_control.is_some() {
             return;
         }
-        if self.store.is_none() {
+        let Some(store) = &self.store else {
             self.persist(|_| Ok(()));
             return;
-        }
+        };
         let roots = scan::unique_roots(&roots);
         if roots.is_empty() {
             return;
         }
+        // Display cards can merge unrelated legacy records that shared a folder.
+        // Verify each original candidate against its own installations.
+        let previous_candidates = match store.scan_candidates() {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                self.status = error.to_string();
+                return;
+            }
+        };
         let exclusions = self.exclusions.clone();
         self.scan_roots = roots.clone();
         self.scan_exclusions = exclusions.clone();
         self.scan_seen_paths.clear();
+        self.scan_seen_ids.clear();
         let control = ScanControl::default();
         let worker_control = control.clone();
         let (sender, receiver) = mpsc::sync_channel(64);
-        let previous_candidates: Vec<_> = self
-            .games
-            .iter()
-            .filter(|game| !game.confirmed)
-            .cloned()
-            .collect();
         let cleanup_label = tr(
             self.language,
             "Vérification des anciens candidats…",
@@ -831,20 +837,32 @@ impl RustyShelfApp {
                     }
                 }
                 let mut scan_result = (0, true);
+                let mut cleanup_exclusions = exclusions;
                 scan::scan_roots(&roots, &scan_exclusions, &worker_control, |event| {
                     let result = match event {
                         ScanEvent::Candidate(game) => emit_candidate(game),
-                        ScanEvent::Finished { visited, cancelled } => {
+                        ScanEvent::Finished {
+                            visited, cancelled, ..
+                        } => {
                             scan_result = (visited, cancelled);
                             true
                         }
-                        event => sender.send(event).is_ok(),
+                        event => {
+                            if let ScanEvent::Error(path, _) | ScanEvent::Skipped(path, _) = &event
+                            {
+                                if !path.as_os_str().is_empty() {
+                                    cleanup_exclusions.push(path.clone());
+                                }
+                            }
+                            sender.send(event).is_ok()
+                        }
                     };
                     if !result {
                         worker_control.cancel();
                     }
                 });
                 let (visited, cancelled) = scan_result;
+                let mut obsolete_ids = Vec::new();
                 // Discovery must reach the store first: an old candidate can be
                 // promoted by a manifest or reappear with a valid new profile.
                 if !cancelled && !previous_candidates.is_empty() {
@@ -864,17 +882,17 @@ impl RustyShelfApp {
                         if scan::obsolete_candidate(
                             &game,
                             &roots,
-                            &exclusions,
+                            &cleanup_exclusions,
                             &launcher_installations,
-                        ) && sender.send(ScanEvent::RejectedCandidate(game.id)).is_err()
-                        {
-                            return;
+                        ) {
+                            obsolete_ids.push(game.id);
                         }
                     }
                 }
                 let _ = sender.send(ScanEvent::Finished {
                     visited,
                     cancelled: cancelled || worker_control.is_cancelled(),
+                    obsolete_ids,
                 });
             }));
             if outcome.is_err() {
@@ -885,6 +903,7 @@ impl RustyShelfApp {
                 let _ = sender.send(ScanEvent::Finished {
                     visited: 0,
                     cancelled: true,
+                    obsolete_ids: Vec::new(),
                 });
             }
         });
@@ -931,6 +950,7 @@ impl RustyShelfApp {
                     events.push(ScanEvent::Finished {
                         visited: self.scan_visited,
                         cancelled: true,
+                        obsolete_ids: Vec::new(),
                     });
                     break;
                 }
@@ -938,33 +958,6 @@ impl RustyShelfApp {
         }
         for event in events {
             match event {
-                ScanEvent::RejectedCandidate(id) => {
-                    if self.console_overrides.contains_key(&id)
-                        || self
-                            .games
-                            .iter()
-                            .find(|game| game.id == id)
-                            .is_some_and(|game| {
-                                game.installations.iter().any(|installation| {
-                                    self.scan_seen_paths
-                                        .iter()
-                                        .any(|path| same_path(path, &installation.path))
-                                })
-                            })
-                    {
-                        continue;
-                    }
-                    if let Some(store) = &self.store {
-                        match store.ignore_obsolete_candidate(&id) {
-                            Ok(true) => {
-                                self.games.retain(|game| game.id != id);
-                                self.diagnostics.filtered_count += 1;
-                            }
-                            Ok(false) => {}
-                            Err(error) => self.diagnostics.error(error.to_string()),
-                        }
-                    }
-                }
                 ScanEvent::Candidate(mut game) => {
                     self.scan_seen_paths.extend(
                         game.installations
@@ -988,6 +981,7 @@ impl RustyShelfApp {
                             self.diagnostics.error(error.to_string());
                             continue;
                         }
+                        self.scan_seen_ids.insert(game.id.clone());
                         match store.custom_title(&game.id) {
                             Ok(Some(title)) => game.title = title,
                             Ok(None) => {}
@@ -1021,12 +1015,29 @@ impl RustyShelfApp {
                     self.scan_exclusions.push(path.clone());
                     self.diagnostics.skip(&path, &reason);
                 }
-                ScanEvent::Finished { visited, cancelled } => {
+                ScanEvent::Finished {
+                    visited,
+                    cancelled,
+                    obsolete_ids,
+                } => {
+                    let cancelled = cancelled
+                        || self
+                            .scan_control
+                            .as_ref()
+                            .is_some_and(ScanControl::is_cancelled);
                     self.scan_visited = visited;
                     self.diagnostics.visited = visited;
                     self.diagnostics.cancelled = Some(cancelled);
                     if let Some(store) = &self.store {
                         if !cancelled {
+                            let stale_ids = obsolete_ids.iter().filter(|id| {
+                                !self.scan_seen_ids.contains(*id)
+                                    && !self.console_overrides.contains_key(*id)
+                            });
+                            match store.ignore_obsolete_candidates(stale_ids.map(String::as_str)) {
+                                Ok(count) => self.diagnostics.filtered_count += count,
+                                Err(error) => self.diagnostics.error(error.to_string()),
+                            }
                             if let Err(error) = store.mark_unseen_under_roots_unavailable(
                                 &self.scan_roots,
                                 &self.scan_exclusions,
@@ -3136,6 +3147,7 @@ mod tests {
             .send(ScanEvent::Finished {
                 visited: 1,
                 cancelled: true,
+                obsolete_ids: Vec::new(),
             })
             .unwrap();
         app.poll_scan(&egui::Context::default());
@@ -3283,6 +3295,7 @@ mod tests {
             scan_roots: vec![],
             scan_exclusions: vec![],
             scan_seen_paths: vec![],
+            scan_seen_ids: HashSet::new(),
             diagnostics: ScanDiagnostics::default(),
             cover_textures: HashMap::new(),
             cover_refresh: None,
@@ -3324,6 +3337,7 @@ mod tests {
                     .send(ScanEvent::Finished {
                         visited: 20,
                         cancelled: true,
+                        obsolete_ids: vec![game.id.clone()],
                     })
                     .unwrap();
             }
@@ -3337,6 +3351,53 @@ mod tests {
             assert!(app.games[0].favorite);
             assert!(app.games[0].installations[0].available);
             assert_eq!(app.diagnostics.error_count, usize::from(abrupt));
+        }
+    }
+
+    #[test]
+    fn cleanup_uses_saved_identity_and_respects_a_late_cancel() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("library.db")).unwrap();
+        let game = Game::from_installation(
+            "Été",
+            "À confirmer",
+            Installation {
+                path: temp.path().join("Game"),
+                launcher: Launcher::Unknown,
+                launch_profile: None,
+                available: true,
+            },
+        );
+        store.save_game(&game).unwrap();
+        let mut app = test_app();
+        app.store = Some(store);
+        for cancel in [true, false] {
+            let (sender, receiver) = mpsc::sync_channel(2);
+            let control = ScanControl::default();
+            if cancel {
+                control.cancel();
+            } else {
+                // A rediscovery with a new title reuses the stored ID by path.
+                let renamed = Game::from_installation(
+                    "Été édition spéciale",
+                    "À confirmer",
+                    game.installations[0].clone(),
+                );
+                sender.send(ScanEvent::Candidate(renamed)).unwrap();
+            }
+            sender
+                .send(ScanEvent::Finished {
+                    visited: 1,
+                    cancelled: false,
+                    obsolete_ids: vec![game.id.clone()],
+                })
+                .unwrap();
+            app.scan_control = Some(control);
+            app.scan_receiver = Some(receiver);
+            app.poll_scan(&egui::Context::default());
+            assert_eq!(app.diagnostics.cancelled, Some(cancel));
+            assert_eq!(app.diagnostics.filtered_count, 0);
+            assert!(!app.store.as_ref().unwrap().is_ignored(&game.id).unwrap());
         }
     }
 
@@ -3609,7 +3670,9 @@ mod tests {
             )
         };
         let old_root = candidate("setup", install.clone());
-        let helper = candidate("Companion tool", duplicate);
+        let helper = candidate("Companion tool", duplicate.clone());
+        let helper_sibling = candidate("Calibration tool", duplicate.clone());
+        let favorite_sibling = candidate("My utility", duplicate);
         let mut multi = candidate("Twin", twin);
         multi.installations.push(Installation {
             path: outside,
@@ -3623,6 +3686,8 @@ mod tests {
         for game in [
             &old_root,
             &helper,
+            &helper_sibling,
+            &favorite_sibling,
             &multi,
             &protected,
             &excluded_game,
@@ -3632,8 +3697,10 @@ mod tests {
             store.save_game(game).unwrap();
         }
         store.set_title(&protected.id, "À conserver").unwrap();
+        store.set_favorite(&favorite_sibling.id, true).unwrap();
         let mut app = test_app();
         app.games = deduplicate_library(store.games().unwrap());
+        assert!(app.games.len() < store.games().unwrap().len());
         app.exclusions = vec![excluded];
         app.store = Some(store);
         app.begin_scan(vec![root], false);
@@ -3645,11 +3712,13 @@ mod tests {
             std::thread::yield_now();
         }
         let store = app.store.as_ref().unwrap();
-        assert_eq!(app.diagnostics.filtered_count, 1);
+        assert_eq!(app.diagnostics.filtered_count, 2);
         assert_eq!(app.diagnostics.error_count, 0);
         assert!(store.is_ignored(&helper.id).unwrap());
+        assert!(store.is_ignored(&helper_sibling.id).unwrap());
         for game in [
             &old_root,
+            &favorite_sibling,
             &multi,
             &protected,
             &excluded_game,
@@ -3709,6 +3778,7 @@ mod tests {
             .send(ScanEvent::Finished {
                 visited: 20,
                 cancelled: true,
+                obsolete_ids: Vec::new(),
             })
             .unwrap();
         app.scan_control = Some(ScanControl::default());

@@ -106,11 +106,14 @@ pub struct ScanProgress {
 #[derive(Clone, Debug)]
 pub enum ScanEvent {
     Candidate(Game),
-    RejectedCandidate(String),
     Error(PathBuf, String),
     Skipped(PathBuf, String),
     Progress(ScanProgress),
-    Finished { visited: usize, cancelled: bool },
+    Finished {
+        visited: usize,
+        cancelled: bool,
+        obsolete_ids: Vec<String>,
+    },
 }
 
 #[derive(Clone, Default)]
@@ -248,6 +251,7 @@ pub fn scan_roots(
     emit(ScanEvent::Finished {
         visited,
         cancelled: control.is_cancelled(),
+        obsolete_ids: Vec::new(),
     });
 }
 

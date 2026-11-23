@@ -325,14 +325,18 @@ impl Store {
     }
 
     pub fn games(&self) -> rusqlite::Result<Vec<Game>> {
-        self.read_games(false)
+        self.read_games(false, false)
+    }
+
+    pub fn scan_candidates(&self) -> rusqlite::Result<Vec<Game>> {
+        self.read_games(false, true)
     }
 
     pub fn ignored_games(&self) -> rusqlite::Result<Vec<Game>> {
-        self.read_games(true)
+        self.read_games(true, false)
     }
 
-    fn read_games(&self, ignored: bool) -> rusqlite::Result<Vec<Game>> {
+    fn read_games(&self, ignored: bool, candidates_only: bool) -> rusqlite::Result<Vec<Game>> {
         // One ordered join replaces one query per game. LEFT JOIN retains games
         // without an installation (for example after importing an older library).
         let mut statement = self.connection.prepare(
@@ -341,9 +345,10 @@ impl Store {
              FROM games g LEFT JOIN installations i ON i.game_id=g.id
              LEFT JOIN title_overrides t ON t.game_id=g.id
              WHERE EXISTS (SELECT 1 FROM ignored_games WHERE game_id=g.id)=?1
+               AND (?2=0 OR g.confirmed=0)
              ORDER BY COALESCE(t.title,g.title) COLLATE NOCASE,g.id,i.path",
         )?;
-        let mut rows = statement.query([ignored])?;
+        let mut rows = statement.query([ignored, candidates_only])?;
         let mut games: Vec<Game> = Vec::new();
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;
@@ -442,17 +447,26 @@ impl Store {
         Ok(())
     }
 
-    pub fn ignore_obsolete_candidate(&self, id: &str) -> rusqlite::Result<bool> {
-        self.connection
-            .execute(
+    pub fn ignore_obsolete_candidates<'a>(
+        &self,
+        ids: impl IntoIterator<Item = &'a str>,
+    ) -> rusqlite::Result<usize> {
+        let tx = self.connection.unchecked_transaction()?;
+        let mut changed = 0;
+        {
+            let mut statement = tx.prepare(
                 "INSERT OR IGNORE INTO ignored_games(game_id) SELECT id FROM games
              WHERE id=?1 AND confirmed=0 AND favorite=0 AND category_custom=0 AND cover_path IS NULL
              AND NOT EXISTS(SELECT 1 FROM title_overrides WHERE game_id=?1)
              AND NOT EXISTS(SELECT 1 FROM game_emulators WHERE game_id=?1)
              AND NOT EXISTS(SELECT 1 FROM installations WHERE game_id=?1 AND launcher<>'unknown')",
-                [id],
-            )
-            .map(|changed| changed != 0)
+            )?;
+            for id in ids {
+                changed += statement.execute([id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(changed)
     }
 
     pub fn is_ignored(&self, id: &str) -> rusqlite::Result<bool> {
@@ -623,12 +637,19 @@ mod tests {
                 _ => {}
             }
             assert_eq!(
-                store.ignore_obsolete_candidate(&game.id).unwrap(),
-                protection == "none",
+                store
+                    .ignore_obsolete_candidates([game.id.as_str()])
+                    .unwrap(),
+                usize::from(protection == "none"),
                 "{protection}"
             );
             assert_eq!(store.is_ignored(&game.id).unwrap(), protection == "none");
-            assert!(!store.ignore_obsolete_candidate(&game.id).unwrap());
+            assert_eq!(
+                store
+                    .ignore_obsolete_candidates([game.id.as_str()])
+                    .unwrap(),
+                0
+            );
             store.restore_ignored_game(&game.id).unwrap();
             assert!(!store.is_ignored(&game.id).unwrap());
         }

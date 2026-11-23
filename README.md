@@ -41,7 +41,7 @@ Lors du scan d’un dossier personnalisé, les manifestes Steam/GOG sont lus ava
 
 La lecture Steam vérifie le bloc `AppState`, ses champs directs, les accolades et la concordance entre l’identifiant du jeu et le nom du manifeste. Les champs d’un sous-bloc ne remplacent pas le titre ou le dossier du jeu. Un chemin d’installation réduit à `.` est refusé pour ne pas considérer toute la bibliothèque comme un seul jeu.
 
-Le filtre des applications Windows couvre aussi des dossiers d’installation connus comme Git, OpenSSL, LibreOffice, PostgreSQL, Docker, Java et .NET. Un nouveau scan du disque concerné masque les anciens candidats de ces dossiers dans les mêmes conditions que les autres faux positifs.
+Le filtre des applications Windows couvre aussi des dossiers d’installation connus comme Git, OpenSSL, LibreOffice, PostgreSQL, Docker, Java et .NET. À la fin du scan, RustyShelf vérifie chaque ancien candidat de ces dossiers, même lorsque plusieurs outils partageaient une vignette. Le bilan compte les entrées masquées.
 
 Pour les fichiers `.mdf`, le scan écarte aussi les bases SQL Server identifiées par leurs en-têtes et les fichiers trop courts pour contenir un secteur de disque. Les images candidates doivent toujours avoir leur fichier `.mds` associé.
 
