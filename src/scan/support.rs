@@ -172,8 +172,34 @@ fn windows_application(path: &Path, product: &Path) -> bool {
     }
 }
 
-pub(super) fn cmake_test(folder: &Path, name: &str) -> bool {
-    name.to_ascii_lowercase().ends_with("_tests")
-        && folder.join("CMakeCache.txt").is_file()
-        && folder.join("CTestTestfile.cmake").is_file()
+pub(super) fn auxiliary_program(folder: &Path, name: &str) -> bool {
+    let binary = |dir: &Path, stem: &str| {
+        dir.join(stem).is_file() || dir.join(format!("{stem}.exe")).is_file()
+    };
+    match name.to_ascii_lowercase().as_str() {
+        "eden" | "eden-cli" | "eden-room" => ["eden", "eden-cli", "eden-room"]
+            .iter()
+            .all(|stem| binary(folder, stem)),
+        "rpcs3" => {
+            binary(folder, "rpcs3")
+                && folder
+                    .ancestors()
+                    .take(2)
+                    .any(|dir| dir.join("dev_hdd0").is_dir() && dir.join("dev_flash").is_dir())
+        }
+        "shadps4" => {
+            (binary(folder, "shadPS4") || binary(folder, "shadps4"))
+                && ((folder.join("user/config.toml").is_file()
+                    && folder.join("user/game_data").is_dir())
+                    || folder.ancestors().skip(1).take(2).any(|dir| {
+                        binary(dir, "BB_Launcher")
+                            && dir.join("BBLauncher/LauncherSettings.toml").is_file()
+                    }))
+        }
+        other => {
+            other.ends_with("_tests")
+                && folder.join("CMakeCache.txt").is_file()
+                && folder.join("CTestTestfile.cmake").is_file()
+        }
+    }
 }

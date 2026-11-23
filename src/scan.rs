@@ -433,7 +433,7 @@ fn candidate_from_executable(path: &Path) -> Option<Game> {
             path.file_stem()
                 .map(|stem| stem.to_string_lossy().to_string())
         })?;
-    if !looks_like_game(&title) || support::cmake_test(path.parent()?, &title) {
+    if !looks_like_game(&title) || support::auxiliary_program(path.parent()?, &title) {
         return None;
     }
     if let Some(text) = desktop_text.as_deref() {
@@ -724,7 +724,7 @@ pub fn obsolete_candidate(
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| game.title.clone());
             !looks_like_game(&name)
-                || support::cmake_test(path, &name)
+                || support::auxiliary_program(path, &name)
                 || support_path(path)
                 || installation
                     .launch_profile
@@ -1221,6 +1221,47 @@ mod tests {
         ));
         game.title = "Adventure".into();
         assert!(!obsolete_candidate(&game, &[root], &[], &[]));
+    }
+
+    #[test]
+    fn portable_emulator_packages_leave_games_and_roms_beside_them_detectable() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        fs::write(root.join("data.win"), []).unwrap();
+        let eden = root.join("eden.exe");
+        fs::write(&eden, []).unwrap();
+        assert!(candidate_from_executable(&eden).is_some());
+        for file in [
+            "eden-cli.exe",
+            "eden-room.exe",
+            "rpcs3.exe",
+            "shadPS4.exe",
+            "Play.exe",
+        ] {
+            fs::write(root.join(file), []).unwrap();
+        }
+        for directory in ["dev_flash", "dev_hdd0", "user/game_data"] {
+            fs::create_dir_all(root.join(directory)).unwrap();
+        }
+        fs::write(root.join("user/config.toml"), []).unwrap();
+        for stem in ["eden", "eden-cli", "eden-room", "rpcs3", "shadPS4"] {
+            assert!(candidate_from_executable(&root.join(format!("{stem}.exe"))).is_none());
+            let old = Game::from_installation(
+                stem,
+                "À confirmer",
+                Installation {
+                    path: root.to_owned(),
+                    launcher: Launcher::Unknown,
+                    launch_profile: None,
+                    available: true,
+                },
+            );
+            assert!(obsolete_candidate(&old, &[root.to_owned()], &[], &[]));
+        }
+        assert!(candidate_from_executable(&root.join("Play.exe")).is_some());
+        let rom = root.join("Eden.nes");
+        fs::write(&rom, b"NES\x1a\0\0\0\0\0\0\0\0\0\0\0\0").unwrap();
+        assert!(candidate_from_disc_image(&rom).is_some());
     }
 
     #[test]
