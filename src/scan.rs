@@ -494,17 +494,69 @@ fn has_game_assets(executable: &Path) -> bool {
         || folder.join("data.win").is_file()
         || folder.join("renpy").is_dir()
         || folder.join("www/data/System.json").is_file()
-        || folder.ancestors().take(4).any(|project| {
-            if !project.join("Content/Paks").is_dir() {
-                return false;
+        || folder
+            .ancestors()
+            .take(4)
+            .any(|project| unreal_assets_match(executable, folder, project))
+}
+
+fn unreal_assets_match(executable: &Path, folder: &Path, project: &Path) -> bool {
+    if !project.join("Content/Paks").is_dir() {
+        return false;
+    }
+    // The staged launcher can live at the project root. Keep it, even when its
+    // filename differs from the engine binary.
+    if folder == project {
+        return true;
+    }
+    let Ok(relative) = folder.strip_prefix(project) else {
+        return false;
+    };
+    let mut parts = relative.components();
+    let Some(binaries) = parts.next() else {
+        return false;
+    };
+    if !binaries.as_os_str().eq_ignore_ascii_case("Binaries") {
+        return false;
+    }
+    let (Some(platform), Some(project_name), Some(stem)) = (
+        parts.next(),
+        project.file_name().and_then(|name| name.to_str()),
+        executable.file_stem().and_then(|name| name.to_str()),
+    ) else {
+        return true;
+    };
+    // Keep custom launch scripts. Their names need not match the packaged
+    // binary, and the scanner already requires separate evidence elsewhere.
+    if executable
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("sh"))
+    {
+        return true;
+    }
+    let platform_name = platform.as_os_str().to_string_lossy();
+    let platform_folder = project.join(binaries).join(platform);
+    let mut has_identified_binary = false;
+    for name in [project_name.to_owned(), format!("{project_name}Client")] {
+        // A packaged development build can be named simply after the project.
+        let build_names = ["", "Debug", "DebugGame", "Development", "Test", "Shipping"];
+        for configuration in build_names {
+            let target = if configuration.is_empty() {
+                name.clone()
+            } else {
+                format!("{name}-{platform_name}-{configuration}")
+            };
+            if stem.eq_ignore_ascii_case(&target) {
+                return true;
             }
-            folder == project
-                || folder.strip_prefix(project).is_ok_and(|relative| {
-                    relative.components().next().is_some_and(|component| {
-                        component.as_os_str().eq_ignore_ascii_case("Binaries")
-                    })
-                })
-        })
+            has_identified_binary = has_identified_binary
+                || platform_folder.join(&target).is_file()
+                || platform_folder.join(format!("{target}.exe")).is_file();
+        }
+    }
+    // Renamed or nonstandard packages can still be found using their assets
+    // when there is no identifiable project binary.
+    !has_identified_binary
 }
 
 fn support_path(path: &Path) -> bool {
@@ -932,6 +984,59 @@ mod tests {
             assert!(candidate_from_executable(&path).is_none(), "{name}");
         }
         assert!(candidate_from_executable(&game.join("Adventure.exe")).is_some());
+    }
+
+    #[test]
+    fn unreal_internal_helpers_do_not_inherit_an_identified_game_binarys_assets() {
+        let temp = tempdir().unwrap();
+        let project = temp.path().join("Étoiles");
+        fs::create_dir_all(project.join("Content/Paks")).unwrap();
+        for (platform, suffix) in [("Win64", ".exe"), ("Linux", "")] {
+            let folder = project.join("Binaries").join(platform);
+            fs::create_dir_all(folder.join("Tools")).unwrap();
+            let shipping = folder.join(format!("Étoiles-{platform}-Shipping{suffix}"));
+            let client = folder.join(format!("ÉtoilesClient-{platform}-Test{suffix}"));
+            let tool = folder.join(format!("VideoConfig{suffix}"));
+            let nested_tool = folder.join(format!("Tools/Calibrate{suffix}"));
+            let standalone = folder.join(format!("Bonus{suffix}"));
+            let wrapper = folder.join("play-with-overlay.sh");
+            let staged = project.join(format!("Play Étoiles{suffix}"));
+            for path in [
+                &shipping,
+                &client,
+                &tool,
+                &nested_tool,
+                &standalone,
+                &wrapper,
+                &staged,
+            ] {
+                fs::write(path, []).unwrap();
+            }
+            fs::write(standalone.with_extension("pck"), []).unwrap();
+
+            for path in [shipping, client, standalone, wrapper, staged] {
+                assert!(
+                    candidate_from_executable(&path).is_some(),
+                    "{}",
+                    path.display()
+                );
+            }
+            for path in [tool, nested_tool] {
+                assert!(
+                    candidate_from_executable(&path).is_none(),
+                    "{}",
+                    path.display()
+                );
+            }
+        }
+
+        let renamed = temp.path().join("Archive restaurée");
+        fs::create_dir_all(renamed.join("Content/Paks")).unwrap();
+        let folder = renamed.join("Binaries/Win64");
+        fs::create_dir_all(&folder).unwrap();
+        let executable = folder.join("OriginalProject-Win64-Shipping.exe");
+        fs::write(&executable, []).unwrap();
+        assert!(candidate_from_executable(&executable).is_some());
     }
 
     #[test]
