@@ -9,6 +9,8 @@ use std::{
 use sysinfo::Disks;
 use walkdir::{DirEntry, WalkDir};
 
+mod support;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Volume {
     pub root: PathBuf,
@@ -431,7 +433,7 @@ fn candidate_from_executable(path: &Path) -> Option<Game> {
             path.file_stem()
                 .map(|stem| stem.to_string_lossy().to_string())
         })?;
-    if !looks_like_game(&title) {
+    if !looks_like_game(&title) || support::cmake_test(path.parent()?, &title) {
         return None;
     }
     if let Some(text) = desktop_text.as_deref() {
@@ -626,7 +628,7 @@ fn unreal_assets_match(executable: &Path, folder: &Path, project: &Path) -> bool
 }
 
 fn support_path(path: &Path) -> bool {
-    if known_application_path(path) {
+    if support::location(path).is_some() {
         return true;
     }
     path.ancestors().take(6).any(|folder| {
@@ -652,50 +654,6 @@ fn support_path(path: &Path) -> bool {
     })
 }
 
-fn known_application_path(path: &Path) -> bool {
-    // Match an installed application directly under Program Files, not a game
-    // title containing a vendor name or an arbitrary project folder.
-    path.ancestors().any(|folder| {
-        let Some(parent) = folder.parent().and_then(Path::file_name) else {
-            return false;
-        };
-        if !parent.eq_ignore_ascii_case("Program Files")
-            && !parent.eq_ignore_ascii_case("Program Files (x86)")
-        {
-            return false;
-        }
-        folder.file_name().is_some_and(|name| {
-            matches!(
-                name.to_string_lossy().to_ascii_lowercase().as_str(),
-                "microsoft office"
-                    | "microsoft visual studio"
-                    | "microsoft sdks"
-                    | "windows kits"
-                    | "amd"
-                    | "gigabyte"
-                    | "bravesoftware"
-                    | "openssl-win64"
-                    | "git"
-                    | "libreoffice"
-                    | "postgresql"
-                    | "docker"
-                    | "dotnet"
-                    | "java"
-                    | "microsoft sql server"
-                    | "obs-studio"
-                    | "mozilla firefox"
-                    | "librewolf"
-                    | "stirling pdf"
-                    | "windows defender"
-                    | "windows defender advanced threat protection"
-                    | "windows media player"
-                    | "wsl"
-                    | "internet explorer"
-            )
-        })
-    })
-}
-
 pub fn obsolete_candidate(
     game: &Game,
     roots: &[PathBuf],
@@ -715,8 +673,22 @@ pub fn obsolete_candidate(
             {
                 return false;
             }
-            let Ok(metadata) = path.metadata() else {
-                return false;
+            let metadata = match path.metadata() {
+                Ok(metadata) => metadata,
+                // Old updaters are commonly gone by the time we rescan. A
+                // recognizable support location on a selected, reachable root
+                // remains evidence, even when its old version folder is absent.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return installation.launch_profile.is_none()
+                        && !game.id.starts_with("rom-")
+                        && !game.category.starts_with("ROM · ")
+                        && crate::rom::console(path).is_none()
+                        && roots
+                            .iter()
+                            .any(|root| path_is_within(path, root) && root.is_dir())
+                        && support::location(path).is_some_and(Path::is_dir);
+                }
+                Err(_) => return false,
             };
             if metadata.is_file() {
                 if crate::rom::invalid_existing_header(path) {
@@ -752,6 +724,7 @@ pub fn obsolete_candidate(
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| game.title.clone());
             !looks_like_game(&name)
+                || support::cmake_test(path, &name)
                 || support_path(path)
                 || installation
                     .launch_profile
@@ -1011,6 +984,243 @@ mod tests {
             ..game.installations[0].clone()
         });
         assert!(!obsolete(&game, &[temp.path().to_path_buf()], &[]));
+    }
+
+    #[test]
+    fn tools_in_verified_support_directories_are_excluded_from_new_and_old_scans() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        let cases = [
+            ("Program Files (x86)/Microsoft/EdgeCore/version", vec![]),
+            ("Program Files/Electronic Arts/EA Desktop/Version", vec![]),
+            (
+                "Program Files (x86)/Epic Games/Epic Online Services/Artifact",
+                vec![],
+            ),
+            ("Program Files (x86)/Steam/bin", vec![]),
+            ("Program Files/nodejs", vec![]),
+            ("Program Files/parallel-launcher", vec![]),
+            (
+                "Program Files (x86)/Common Files/Microsoft Shared/ClickToRun",
+                vec![],
+            ),
+            (
+                "Program Files (x86)/Samsung/Samsung Magician/MigrationService",
+                vec![],
+            ),
+            (
+                "Project/target/debug/build/Generated",
+                vec!["Project/Cargo.toml"],
+            ),
+            ("Project/target/debug/deps", vec!["Project/Cargo.toml"]),
+            (
+                "Project/target/triple/release/deps",
+                vec!["Project/Cargo.toml"],
+            ),
+            (
+                "Project/build/CMakeFiles/version/CompilerIdCXX",
+                vec!["Project/build/CMakeCache.txt"],
+            ),
+            (
+                "SDK/rustup/toolchains/stable/bin",
+                vec!["SDK/rustup/settings.toml"],
+            ),
+            ("Steam Library/steamapps/temp/42", vec![]),
+            ("A Game/jre64/bin", vec!["A Game/jre64/release"]),
+            (
+                "BBLauncher/Mods/Mod Version",
+                vec![
+                    "BBLauncher/LauncherSettings.toml",
+                    "BBLauncher/Mods/ActiveMods.txt",
+                ],
+            ),
+        ];
+        for (relative, markers) in cases {
+            let folder = root.join(relative);
+            fs::create_dir_all(&folder).unwrap();
+            fs::create_dir_all(root.join("Steam Library/steamapps/common")).unwrap();
+            fs::create_dir_all(root.join("A Game/jre64/lib")).unwrap();
+            for marker in markers {
+                fs::write(root.join(marker), []).unwrap();
+            }
+            fs::write(folder.join("data.win"), []).unwrap();
+            let executable = folder.join("Component.exe");
+            fs::write(&executable, []).unwrap();
+            assert!(
+                candidate_from_executable(&executable).is_none(),
+                "{relative}"
+            );
+            let game = Game::from_installation(
+                "Component",
+                "À confirmer",
+                Installation {
+                    path: folder,
+                    launcher: Launcher::Unknown,
+                    launch_profile: None,
+                    available: true,
+                },
+            );
+            assert!(
+                obsolete_candidate(&game, &[root.to_owned()], &[], &[]),
+                "{relative}"
+            );
+        }
+        for relative in [
+            "Games/Microsoft/EdgeCore",
+            "Program Files/Microsoft/Halo",
+            "Program Files/Electronic Arts/Adventure",
+            "Program Files (x86)/Epic Games/Fortnite",
+            "Program Files (x86)/Steam/steamapps/common/Adventure",
+            "Games/target/debug/deps",
+            "Games/steamapps/temp",
+            "Other Game/jre64/bin",
+            "Games/BBLauncher/Mods/Adventure",
+            "A Game",
+        ] {
+            let folder = root.join(relative);
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(folder.join("data.win"), []).unwrap();
+            assert!(
+                candidate_from_executable(&folder.join("Adventure.exe")).is_some(),
+                "{relative}"
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_builds_and_retired_packages_do_not_appear_as_games() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        for relative in ["examples", "src", "target/debug"] {
+            fs::create_dir_all(root.join(relative)).unwrap();
+        }
+        for marker in [
+            "examples/rustyshelf.css",
+            "src/scan.rs",
+            "target/debug/data.win",
+        ] {
+            fs::write(root.join(marker), []).unwrap();
+        }
+        assert!(candidate_from_executable(&root.join("target/debug/rustyshelf.exe")).is_none());
+        let mut game = Game::from_installation(
+            "GameShelf",
+            "À confirmer",
+            Installation {
+                path: root.join("target/debug"),
+                launcher: Launcher::Unknown,
+                launch_profile: None,
+                available: true,
+            },
+        );
+        game.installations.push(Installation {
+            path: root.join("dist/GameShelf-windows-x86_64"),
+            available: false,
+            ..game.installations[0].clone()
+        });
+        assert!(obsolete_candidate(&game, &[root], &[], &[]));
+    }
+
+    #[test]
+    fn stale_support_paths_are_only_hidden_on_reachable_selected_roots() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("Mounted");
+        let program_files = root.join("Program Files");
+        fs::create_dir_all(&program_files).unwrap();
+        let old_version = program_files.join("Electronic Arts/EA Desktop/RemovedVersion");
+        let mut game = Game::from_installation(
+            "EA Helper",
+            "À confirmer",
+            Installation {
+                path: old_version.clone(),
+                launcher: Launcher::Unknown,
+                launch_profile: None,
+                available: false,
+            },
+        );
+        assert!(obsolete_candidate(
+            &game,
+            std::slice::from_ref(&root),
+            &[],
+            &[]
+        ));
+        assert!(!obsolete_candidate(
+            &game,
+            std::slice::from_ref(&root),
+            &[old_version],
+            &[]
+        ));
+        assert!(!obsolete_candidate(&game, &[root.join("Games")], &[], &[]));
+        game.installations[0].launch_profile = Some(LaunchProfile {
+            command: root.join("Games/Adventure.exe"),
+            arguments: vec![],
+            working_directory: None,
+            launcher_command: None,
+        });
+        assert!(!obsolete_candidate(
+            &game,
+            std::slice::from_ref(&root),
+            &[],
+            &[]
+        ));
+        game.installations[0].launch_profile = None;
+        let untouched = Installation {
+            path: root.join("Games/Missing Adventure"),
+            ..game.installations[0].clone()
+        };
+        game.installations.push(untouched);
+        assert!(!obsolete_candidate(
+            &game,
+            std::slice::from_ref(&root),
+            &[],
+            &[]
+        ));
+        game.installations.pop();
+        game.category = "ROM · Images à classer".into();
+        assert!(!obsolete_candidate(
+            &game,
+            std::slice::from_ref(&root),
+            &[],
+            &[]
+        ));
+        game.category = "À confirmer".into();
+        fs::remove_dir(&program_files).unwrap();
+        assert!(!obsolete_candidate(
+            &game,
+            std::slice::from_ref(&root),
+            &[],
+            &[]
+        ));
+        fs::remove_dir(&root).unwrap();
+        assert!(!obsolete_candidate(&game, &[root], &[], &[]));
+    }
+
+    #[test]
+    fn cmake_test_executables_do_not_mask_the_game_beside_them() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        for marker in ["CMakeCache.txt", "CTestTestfile.cmake", "data.win"] {
+            fs::write(root.join(marker), []).unwrap();
+        }
+        assert!(candidate_from_executable(&root.join("Adventure_tests.exe")).is_none());
+        assert!(candidate_from_executable(&root.join("Adventure.exe")).is_some());
+        let mut game = Game::from_installation(
+            "Adventure_tests",
+            "À confirmer",
+            Installation {
+                path: root.clone(),
+                launcher: Launcher::Unknown,
+                launch_profile: None,
+                available: true,
+            },
+        );
+        assert!(obsolete_candidate(
+            &game,
+            std::slice::from_ref(&root),
+            &[],
+            &[]
+        ));
+        game.title = "Adventure".into();
+        assert!(!obsolete_candidate(&game, &[root], &[], &[]));
     }
 
     #[test]
