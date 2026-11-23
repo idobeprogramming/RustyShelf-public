@@ -223,10 +223,8 @@ pub fn scan_roots(
                         }
                         continue;
                     }
-                    if is_candidate_executable(entry.path()) {
-                        if let Some(game) = candidate_from_executable(entry.path()) {
-                            emit(ScanEvent::Candidate(game));
-                        }
+                    if let Some(game) = scan_executable(entry.path()) {
+                        emit(ScanEvent::Candidate(game));
                     }
                 }
                 Err(error) => {
@@ -335,12 +333,80 @@ fn is_candidate_executable(path: &Path) -> bool {
     #[cfg(not(windows))]
     {
         extension.eq_ignore_ascii_case("desktop")
-            || extension.eq_ignore_ascii_case("sh")
             || std::fs::metadata(path).is_ok_and(|metadata| {
                 use std::os::unix::fs::PermissionsExt;
                 metadata.permissions().mode() & 0o111 != 0
             })
     }
+}
+
+fn scan_executable(path: &Path) -> Option<Game> {
+    if !is_candidate_executable(path) {
+        return None;
+    }
+    let game = candidate_from_executable(path)?;
+    // An NTFS mount can mark every file executable. Read a bounded prefix
+    // once the path already has game evidence, rather than opening all files.
+    #[cfg(not(windows))]
+    if !path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("desktop"))
+    {
+        use std::io::Read;
+        let mut header = Vec::with_capacity(256);
+        std::fs::File::open(path)
+            .ok()?
+            .take(256)
+            .read_to_end(&mut header)
+            .ok()?;
+        if !unix_launch_header(&header) {
+            return None;
+        }
+    }
+    Some(game)
+}
+
+#[cfg(any(not(windows), test))]
+fn unix_launch_header(header: &[u8]) -> bool {
+    if let Some(script) = header.strip_prefix(b"#!") {
+        let line = script
+            .split(|&byte| byte == b'\n')
+            .next()
+            .unwrap_or_default();
+        if line.iter().any(|&byte| matches!(byte, b'\r' | b'\0')) {
+            return false;
+        }
+        let Some(start) = line.iter().position(|byte| !matches!(byte, b' ' | b'\t')) else {
+            return false;
+        };
+        let command = &line[start..];
+        let end = command.iter().position(|byte| matches!(byte, b' ' | b'\t'));
+        if end.is_none() && line.len() == script.len() && header.len() == 256 {
+            return false;
+        }
+        let interpreter = &command[..end.unwrap_or(command.len())];
+        return interpreter.len() > 1 && interpreter.starts_with(b"/");
+    }
+    if !header.starts_with(b"\x7fELF") {
+        return false;
+    }
+    let (header_size, entry_end) = match header.get(4) {
+        Some(1) => (52, 28),
+        Some(2) => (64, 32),
+        _ => return false,
+    };
+    if header.len() < header_size || header[6] != 1 {
+        return false;
+    }
+    let file_type = [header[16], header[17]];
+    let file_type = match header[5] {
+        1 => u16::from_le_bytes(file_type),
+        2 => u16::from_be_bytes(file_type),
+        _ => return false,
+    };
+    // Both ordinary executable images and position-independent executable
+    // images have entry points. Ordinary shared libraries lack one.
+    matches!(file_type, 2 | 3) && header[24..entry_end].iter().any(|&byte| byte != 0)
 }
 
 fn candidate_from_executable(path: &Path) -> Option<Game> {
@@ -1404,17 +1470,15 @@ mod tests {
         let ignored = temp.path().join("ignored").join("HiddenGame");
         fs::create_dir_all(&game).unwrap();
         fs::create_dir_all(&ignored).unwrap();
+        #[cfg(windows)]
         fs::write(game.join("SuperGame.exe"), []).unwrap();
         fs::create_dir(game.join("SuperGame_Data")).unwrap();
-        // Linux scans native executables and scripts, not Windows .exe files.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(
-                game.join("SuperGame.exe"),
-                fs::Permissions::from_mode(0o755),
-            )
-            .unwrap();
+            let launcher = game.join("SuperGame.sh");
+            fs::write(&launcher, b"#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(launcher, fs::Permissions::from_mode(0o755)).unwrap();
         }
         fs::write(ignored.join("HiddenGame.exe"), []).unwrap();
         let (tx, rx) = mpsc::channel();
@@ -1438,6 +1502,84 @@ mod tests {
             })
             .collect();
         assert_eq!(titles, ["SuperGame"]);
+    }
+
+    #[test]
+    fn unix_launch_checks_distinguish_executable_formats_from_assets() {
+        let mut elf = [0u8; 64];
+        elf[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
+        elf[16] = 2; // ET_EXEC
+        elf[25] = 0x10;
+        assert!(unix_launch_header(&elf));
+        assert!(!unix_launch_header(&elf[..63]));
+        elf[16] = 3; // ET_DYN with an entry point is typical for PIE.
+        assert!(unix_launch_header(&elf));
+        elf[25] = 0; // Ordinary shared library.
+        assert!(!unix_launch_header(&elf));
+        elf[4] = 1; // 32-bit
+        elf[5] = 2; // Big endian.
+        elf[16] = 0;
+        elf[17] = 3;
+        elf[27] = 0x10;
+        assert!(unix_launch_header(&elf[..52]));
+        elf[17] = 1; // Relocatable object files are not launchable.
+        assert!(!unix_launch_header(&elf[..52]));
+
+        for script in [b"#!/bin/sh\n".as_slice(), b"#! /usr/bin/env bash\n"] {
+            assert!(unix_launch_header(script));
+        }
+        for asset in [
+            b"MZsome Windows binary".as_slice(),
+            b"\xff\xd8\xff photo",
+            b"GDPC packaged data",
+            b"echo a text file",
+            b"#!\n",
+            b"#!relative/interpreter\n",
+            b"#!/bin/sh\r\n",
+        ] {
+            assert!(!unix_launch_header(asset));
+        }
+        let mut truncated = [b'x'; 256];
+        truncated[..3].copy_from_slice(b"#!/");
+        assert!(!unix_launch_header(&truncated));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_ignores_assets_with_executable_bits_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempdir().unwrap();
+        let folder = temp.path();
+        for (name, contents) in [
+            ("data.win", b"WIN".as_slice()),
+            ("Bonus.pck", b"GDPC"),
+            ("Cover.jpg", b"\xff\xd8\xff"),
+            ("Game.exe", b"MZ"),
+            ("Launch.sh", b"#!/usr/bin/env bash\n"),
+        ] {
+            let path = folder.join(name);
+            fs::write(&path, contents).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        fs::write(folder.join("Not executable.sh"), b"#!/bin/sh\n").unwrap();
+        fs::write(
+            folder.join("Game.desktop"),
+            b"[Desktop Entry]\nName=Registered Game\nCategories=Game;\nExec=game\n",
+        )
+        .unwrap();
+        let mut titles = Vec::new();
+        scan_roots(
+            &[folder.to_path_buf()],
+            &[],
+            &ScanControl::default(),
+            |event| {
+                if let ScanEvent::Candidate(game) = event {
+                    titles.push(game.title);
+                }
+            },
+        );
+        titles.sort();
+        assert_eq!(titles, ["Launch", "Registered Game"]);
     }
 
     #[test]
