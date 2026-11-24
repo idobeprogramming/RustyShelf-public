@@ -5,3 +5,9 @@
 *.db
 *.db-shm
 *.db-wal
+*.sqlite3
+*.sqlite3-*
+rustyshelf-catalogue.json
+rustyshelf-scan.txt
+.env
+.env.local
