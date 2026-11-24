@@ -45,6 +45,7 @@ impl Store {
              CREATE TABLE IF NOT EXISTS ignored_games (game_id TEXT PRIMARY KEY);
              CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS title_overrides (game_id TEXT PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE, title TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS detected_consoles (game_id TEXT PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE, console TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS emulators (id TEXT PRIMARY KEY, name TEXT NOT NULL, executable TEXT NOT NULL UNIQUE);
              CREATE TABLE IF NOT EXISTS game_emulators (game_id TEXT PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE, emulator_id TEXT NOT NULL REFERENCES emulators(id) ON DELETE CASCADE);
              CREATE TABLE IF NOT EXISTS categories (name TEXT PRIMARY KEY);",
@@ -164,6 +165,7 @@ impl Store {
             )?;
             tx.execute("INSERT OR IGNORE INTO game_emulators(game_id,emulator_id) SELECT ?1,emulator_id FROM game_emulators WHERE game_id=?2", params![new_id, old_id])?;
             tx.execute("INSERT OR IGNORE INTO title_overrides(game_id,title) SELECT ?1,title FROM title_overrides WHERE game_id=?2", params![new_id, old_id])?;
+            tx.execute("INSERT OR IGNORE INTO detected_consoles(game_id,console) SELECT ?1,console FROM detected_consoles WHERE game_id=?2", params![new_id, old_id])?;
             tx.execute("INSERT OR IGNORE INTO ignored_games(game_id) SELECT ?1 FROM ignored_games WHERE game_id=?2", params![new_id, old_id])?;
             if let Some(console) = overrides.remove(&old_id) {
                 // A correction already attached to the surviving record wins.
@@ -297,7 +299,20 @@ impl Store {
         });
         let category = existing
             .as_ref()
-            .filter(|row| row.3 || (row.4 && (!game.confirmed || preserve_launcher_metadata)))
+            .filter(|row| {
+                if row.3 {
+                    return true;
+                }
+                if row.2.starts_with("ROM · ") && game.category.starts_with("ROM · ") {
+                    if game.detected_console.is_some() {
+                        return false;
+                    }
+                    if game.category.strip_prefix("ROM · ") == Some(crate::rom::UNCLASSIFIED) {
+                        return true;
+                    }
+                }
+                row.4 && (!game.confirmed || preserve_launcher_metadata)
+            })
             .map_or_else(|| game.category.clone(), |row| row.2.clone());
         tx.execute(
             "INSERT INTO games(id,title,category,favorite,confirmed,cover_path) VALUES(?1,?2,?3,?4,?5,?6)
@@ -305,6 +320,13 @@ impl Store {
              confirmed=MAX(excluded.confirmed,games.confirmed), cover_path=COALESCE(excluded.cover_path,games.cover_path)",
             params![game.id, game.title, category, favorite, game.confirmed, cover, preserve_launcher_metadata],
         )?;
+        if let Some(console) = &game.detected_console {
+            tx.execute(
+                "INSERT INTO detected_consoles(game_id,console) VALUES(?1,?2)
+                        ON CONFLICT(game_id) DO UPDATE SET console=excluded.console",
+                params![game.id, console],
+            )?;
+        }
         for installation in &game.installations {
             let profile = installation
                 .launch_profile
@@ -343,9 +365,10 @@ impl Store {
             "SELECT g.id,COALESCE(t.title,g.title),g.category,g.favorite,g.confirmed,g.cover_path,
                     i.path,i.launcher,i.profile,i.available,
                     (g.category_custom OR t.game_id IS NOT NULL OR
-                     EXISTS(SELECT 1 FROM game_emulators e WHERE e.game_id=g.id))
+                     EXISTS(SELECT 1 FROM game_emulators e WHERE e.game_id=g.id)), d.console
              FROM games g LEFT JOIN installations i ON i.game_id=g.id
              LEFT JOIN title_overrides t ON t.game_id=g.id
+             LEFT JOIN detected_consoles d ON d.game_id=g.id
              WHERE EXISTS (SELECT 1 FROM ignored_games WHERE game_id=g.id)=?1
                AND (?2=0 OR g.confirmed=0)
              ORDER BY COALESCE(t.title,g.title) COLLATE NOCASE,g.id,i.path",
@@ -364,6 +387,7 @@ impl Store {
                     id,
                     title: row.get(1)?,
                     category: row.get(2)?,
+                    detected_console: row.get(11)?,
                     favorite: row.get(3)?,
                     confirmed: row.get(4)?,
                     cover_path: cover.map(PathBuf::from),

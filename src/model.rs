@@ -47,6 +47,8 @@ pub struct Game {
     pub id: String,
     pub title: String,
     pub category: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detected_console: Option<String>,
     pub favorite: bool,
     pub confirmed: bool,
     pub cover_path: Option<PathBuf>,
@@ -87,6 +89,7 @@ impl Game {
             id,
             title,
             category: category.into(),
+            detected_console: None,
             favorite: false,
             confirmed: installation.launcher != Launcher::Unknown,
             cover_path: None,

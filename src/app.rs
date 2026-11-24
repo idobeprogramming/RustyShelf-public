@@ -222,6 +222,12 @@ fn load_mapping(store: Option<&Store>, key: &str) -> HashMap<String, String> {
         .unwrap_or_default()
 }
 
+fn load_console_overrides(store: Option<&Store>) -> HashMap<String, String> {
+    let mut overrides = load_mapping(store, "console_overrides");
+    overrides.retain(|_, console| crate::rom::CONSOLES.contains(&console.as_str()));
+    overrides
+}
+
 fn launcher_label(launcher: &Launcher, language: Language) -> &'static str {
     match launcher {
         Launcher::Steam => "Steam",
@@ -356,8 +362,7 @@ impl RustyShelfApp {
             status = format!("Base locale indisponible : {error}");
         }
         let volumes = scan::mounted_volumes();
-        let mut console_overrides = load_mapping(store.as_ref(), "console_overrides");
-        console_overrides.retain(|_, console| crate::rom::assignable_console(console));
+        let console_overrides = load_console_overrides(store.as_ref());
         let mut console_emulators = load_mapping(store.as_ref(), "console_emulators");
         console_emulators.retain(|console, _| crate::rom::assignable_console(console));
         let diagnostics = store
@@ -1110,6 +1115,7 @@ impl RustyShelfApp {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Nouveau jeu".into());
         let is_rom = crate::rom::console(&executable).is_some();
+        let detected_console = crate::rom::detected_console(&executable);
         let install_path = if is_rom {
             executable.clone()
         } else {
@@ -1131,6 +1137,7 @@ impl RustyShelfApp {
                 available: true,
             },
         );
+        game.detected_console = detected_console.map(str::to_owned);
         game.cover_path = crate::covers::find(&game, &[], &ScanControl::default());
         if self.update_library(|store| store.save_manual_game(&mut game)) {
             self.selected_game = Some(game.id);
@@ -2822,6 +2829,9 @@ fn merge_game_in_memory(games: &mut Vec<Game>, incoming: Game) {
         }
         current.confirmed |= incoming.confirmed;
         current.favorite |= incoming.favorite;
+        if let Some(console) = incoming.detected_console {
+            current.detected_console = Some(console);
+        }
         if current.cover_path.is_none() {
             current.cover_path = incoming.cover_path;
         }
@@ -3824,6 +3834,76 @@ mod tests {
                 .unwrap()
                 .confirmed
         );
+    }
+
+    #[test]
+    fn scan_classifies_existing_disc_images_and_preserves_personal_choices() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = temp.path().join("library.db");
+        let root = temp.path().join("Archive");
+        std::fs::create_dir(&root).unwrap();
+        let store = Store::open(&database).unwrap();
+        let mut app = test_app();
+        let mut ids = Vec::new();
+        for (title, offset, magic) in [
+            ("Été", 0x1c, [0xc2, 0x33, 0x9f, 0x3d]),
+            ("Étoiles", 0x18, [0x5d, 0x1c, 0x9e, 0xa3]),
+        ] {
+            let path = root.join(format!("{title}.iso"));
+            let mut header = [0; 2048];
+            header[offset..offset + 4].copy_from_slice(&magic);
+            std::fs::write(&path, header).unwrap();
+            let mut old = Game::from_installation(
+                title,
+                "ROM · Images à classer",
+                Installation {
+                    path,
+                    launcher: Launcher::Unknown,
+                    launch_profile: None,
+                    available: true,
+                },
+            );
+            old.confirmed = true;
+            store.save_game(&old).unwrap();
+            ids.push(old.id);
+        }
+        store.set_category(&ids[1], "Mes classiques").unwrap();
+        store.set_favorite(&ids[1], true).unwrap();
+        let overrides = HashMap::from([(ids[1].clone(), crate::rom::UNCLASSIFIED.to_owned())]);
+        store
+            .set_preference(
+                "console_overrides",
+                &serde_json::to_string(&overrides).unwrap(),
+            )
+            .unwrap();
+        app.console_overrides = load_console_overrides(Some(&store));
+        std::fs::write(root.join("Installation.iso"), b"ordinary data").unwrap();
+        app.games = store.games().unwrap();
+        app.store = Some(store);
+        app.begin_scan(vec![root.clone()], false);
+        let ctx = egui::Context::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.scan_control.is_some() {
+            assert!(std::time::Instant::now() < deadline);
+            app.poll_scan(&ctx);
+            std::thread::yield_now();
+        }
+        assert_eq!(app.diagnostics.error_count, 0);
+        assert_eq!(app.games.len(), 2);
+        let custom = app.games.iter().find(|game| game.id == ids[1]).unwrap();
+        assert_eq!(app.game_console(custom), Some(crate::rom::UNCLASSIFIED));
+        drop(app);
+        std::fs::rename(&root, temp.path().join("Débranché")).unwrap();
+        let reopened = Store::open(database).unwrap();
+        assert_eq!(load_console_overrides(Some(&reopened)), overrides);
+        let games = reopened.games().unwrap();
+        let original = games.iter().find(|game| game.id == ids[0]).unwrap();
+        assert_eq!(crate::rom::game_console(original), Some("GameCube"));
+        assert_eq!(original.category, "ROM · GameCube");
+        let custom = games.iter().find(|game| game.id == ids[1]).unwrap();
+        assert_eq!(crate::rom::game_console(custom), Some("Wii"));
+        assert!(custom.confirmed && custom.favorite);
+        assert_eq!(custom.category, "Mes classiques");
     }
 
     #[test]

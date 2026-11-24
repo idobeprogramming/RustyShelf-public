@@ -534,22 +534,26 @@ fn desktop_value(contents: &str, key: &str) -> Option<String> {
 
 fn candidate_from_disc_image(path: &Path) -> Option<Game> {
     let title = path.file_stem()?.to_string_lossy().trim().to_string();
-    if title.is_empty() || !crate::rom::scan_candidate(path) {
+    if title.is_empty() {
         return None;
     }
-    Some(Game::from_installation(
+    let detected = crate::rom::detected_console(path);
+    if !detected.is_some_and(crate::rom::assignable_console) && !crate::rom::scan_candidate(path) {
+        return None;
+    }
+    let console = detected.or_else(|| crate::rom::console(path))?;
+    let mut game = Game::from_installation(
         title,
-        format!(
-            "ROM · {}",
-            crate::rom::console(path).unwrap_or(crate::rom::UNCLASSIFIED)
-        ),
+        format!("ROM · {console}"),
         Installation {
             path: path.to_path_buf(),
             launcher: Launcher::Unknown,
             launch_profile: None,
             available: true,
         },
-    ))
+    );
+    game.detected_console = detected.map(str::to_owned);
+    Some(game)
 }
 
 fn has_game_assets(executable: &Path) -> bool {

@@ -1,3 +1,5 @@
+mod sony;
+
 use crate::{emulator, model::Game};
 use std::path::Path;
 
@@ -30,6 +32,14 @@ pub const CONSOLES: &[&str] = &[
 ];
 
 pub fn game_console(game: &Game) -> Option<&'static str> {
+    if let Some(console) = game.detected_console.as_deref().and_then(|detected| {
+        CONSOLES
+            .iter()
+            .copied()
+            .find(|&console| console == detected)
+    }) {
+        return Some(console);
+    }
     game.installations
         .iter()
         .find_map(|installation| {
@@ -81,6 +91,68 @@ pub fn console(path: &Path) -> Option<&'static str> {
         _ => return None,
     };
     Some(console)
+}
+
+/// Identify supported disc images from their bytes during a scan or import.
+/// UI callers use the saved result rather than reading the game file again.
+/// A readable image with no recognized signature returns `UNCLASSIFIED`.
+pub fn detected_console(path: &Path) -> Option<&'static str> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    let detected = match extension.as_str() {
+        "iso" | "gcm" => {
+            let mut file = std::fs::File::open(path).ok()?;
+            match raw_nintendo_disc_console(&mut file).ok()? {
+                None if extension == "iso" => sony::detect(&mut file).ok()?,
+                nintendo => nintendo,
+            }
+        }
+        "rvz" => {
+            // The RVZ header is followed by a disc type and an uncompressed
+            // copy of the original disc's header. Read only through its magic.
+            let mut header = [0; 0x78];
+            let mut file = std::fs::File::open(path).ok()?;
+            if !read_prefix(&mut file, &mut header).ok()? || !header.starts_with(b"RVZ\x01") {
+                return Some(UNCLASSIFIED);
+            }
+            match (&header[0x48..0x4c], nintendo_disc_header(&header[0x58..])) {
+                ([0, 0, 0, 1], Some("GameCube")) => Some("GameCube"),
+                ([0, 0, 0, 2], Some("Wii")) => Some("Wii"),
+                _ => None,
+            }
+        }
+        _ => return None,
+    };
+    Some(detected.unwrap_or(UNCLASSIFIED))
+}
+
+fn raw_nintendo_disc_console(file: &mut std::fs::File) -> std::io::Result<Option<&'static str>> {
+    // A small metadata fragment can contain the magic but not a disc header.
+    let mut header = [0; 0x440];
+    if read_prefix(file, &mut header)? {
+        Ok(nintendo_disc_header(&header))
+    } else {
+        Ok(None)
+    }
+}
+
+fn read_prefix(file: &mut std::fs::File, header: &mut [u8]) -> std::io::Result<bool> {
+    use std::io::{ErrorKind, Read};
+
+    match file.read_exact(header) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::UnexpectedEof => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn nintendo_disc_header(header: &[u8]) -> Option<&'static str> {
+    let wii_magic = header.get(0x18..0x1c) == Some(&[0x5d, 0x1c, 0x9e, 0xa3]);
+    let gamecube_magic = header.get(0x1c..0x20) == Some(&[0xc2, 0x33, 0x9f, 0x3d]);
+    match (wii_magic, gamecube_magic) {
+        (true, false) => Some("Wii"),
+        (false, true) => Some("GameCube"),
+        _ => None,
+    }
 }
 
 fn has_sega_header(path: &Path) -> bool {
@@ -148,6 +220,10 @@ fn checked_header(path: &Path) -> std::io::Result<Option<bool>> {
         .to_ascii_lowercase();
     let minimum = match extension.as_str() {
         "mdf" => return Ok(mdf_is_not_disc(path)?.then_some(false)),
+        "gcm" => {
+            let mut file = std::fs::File::open(path)?;
+            return raw_nintendo_disc_console(&mut file).map(|console| Some(console.is_some()));
+        }
         "nes" => 16,
         "n64" | "z64" | "v64" => 64,
         "3ds" | "cci" => 512,
@@ -265,6 +341,84 @@ pub fn assignable_console(console: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disc_magic_distinguishes_gamecube_wii_and_generic_iso_images() {
+        let temp = tempfile::tempdir().unwrap();
+        let iso = temp.path().join("GameCube Wii PS2.iso");
+        assert_eq!(detected_console(&iso), None);
+        std::fs::write(&iso, [0; 32]).unwrap();
+        assert_eq!(detected_console(&iso), Some(UNCLASSIFIED));
+        assert!(!scan_candidate(&iso), "the filename is not disc evidence");
+
+        let mut disc = [0; 0x440];
+        disc[0x1c..0x20].copy_from_slice(&[0xc2, 0x33, 0x9f, 0x3d]);
+        std::fs::write(&iso, &disc[..32]).unwrap();
+        assert_eq!(detected_console(&iso), Some(UNCLASSIFIED));
+        std::fs::write(&iso, disc).unwrap();
+        assert_eq!(detected_console(&iso), Some("GameCube"));
+
+        let gcm = temp.path().join("aventure.gcm");
+        std::fs::write(&gcm, disc).unwrap();
+        assert!(scan_candidate(&gcm));
+        assert_eq!(detected_console(&gcm), Some("GameCube"));
+        std::fs::write(&gcm, b"not a disc").unwrap();
+        assert!(!scan_candidate(&gcm));
+        assert!(invalid_existing_header(&gcm));
+        std::fs::remove_file(&gcm).unwrap();
+        assert!(!invalid_existing_header(&gcm));
+
+        disc[0x18..0x1c].copy_from_slice(&[0x5d, 0x1c, 0x9e, 0xa3]);
+        std::fs::write(&iso, disc).unwrap();
+        assert_eq!(
+            detected_console(&iso),
+            Some(UNCLASSIFIED),
+            "conflicting magic"
+        );
+        disc[0x1c..].fill(0);
+        std::fs::write(&iso, disc).unwrap();
+        assert_eq!(detected_console(&iso), Some("Wii"));
+
+        let mut game = Game::from_installation(
+            "Moi",
+            "Mes favoris rétro",
+            crate::model::Installation {
+                path: iso.clone(),
+                launcher: crate::model::Launcher::Unknown,
+                launch_profile: None,
+                available: true,
+            },
+        );
+        game.detected_console = detected_console(&iso).map(str::to_owned);
+        std::fs::remove_file(&iso).unwrap();
+        assert_eq!(game_console(&game), Some("Wii"));
+        assert_eq!(detected_console(&iso), None);
+        game.detected_console = Some(UNCLASSIFIED.into());
+        assert_eq!(game_console(&game), Some(UNCLASSIFIED));
+    }
+
+    #[test]
+    fn rvz_disc_type_requires_the_matching_embedded_disc_header() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("Aventure.RVZ");
+        let mut data = [0; 0x78];
+        data[..4].copy_from_slice(b"RVZ\x01");
+        for (kind, offset, magic, expected) in [
+            (1, 0x74, [0xc2, 0x33, 0x9f, 0x3d], "GameCube"),
+            (2, 0x70, [0x5d, 0x1c, 0x9e, 0xa3], "Wii"),
+        ] {
+            data[0x4b] = kind;
+            data[0x70..].fill(0);
+            data[offset..offset + 4].copy_from_slice(&magic);
+            std::fs::write(&path, data).unwrap();
+            assert_eq!(detected_console(&path), Some(expected));
+            data[0x4b] = 3 - kind;
+            std::fs::write(&path, data).unwrap();
+            assert_eq!(detected_console(&path), Some(UNCLASSIFIED));
+            std::fs::write(&path, &data[..0x48]).unwrap();
+            assert_eq!(detected_console(&path), Some(UNCLASSIFIED));
+        }
+    }
 
     #[test]
     fn smd_detection_uses_cartridge_content_instead_of_rom_folder_names() {
