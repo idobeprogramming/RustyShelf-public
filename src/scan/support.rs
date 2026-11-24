@@ -1,4 +1,4 @@
-use std::{ffi::OsStr, path::Path};
+use std::{ffi::OsStr, fs, path::Path};
 
 fn named(name: Option<&OsStr>, choices: &[&str]) -> bool {
     name.is_some_and(|name| {
@@ -197,9 +197,132 @@ pub(super) fn auxiliary_program(folder: &Path, name: &str) -> bool {
                     }))
         }
         other => {
-            other.ends_with("_tests")
+            (other.ends_with("_tests")
                 && folder.join("CMakeCache.txt").is_file()
-                && folder.join("CTestTestfile.cmake").is_file()
+                && folder.join("CTestTestfile.cmake").is_file())
+                || python_console_tool(folder, other)
         }
     }
+}
+
+fn python_console_tool(scripts: &Path, command: &str) -> bool {
+    // A console entry point can also be a game. Only check known utilities.
+    let package = match command {
+        "fonttools" | "pyftmerge" | "pyftsubset" | "ttx" => "fonttools",
+        "f2py" | "numpy-config" => "numpy",
+        "pymupdf" => "pymupdf",
+        _ => return false,
+    };
+    let Some(prefix) = scripts.parent() else {
+        return false;
+    };
+    let exe = format!("{command}.exe");
+    let mut wrappers = [command, &exe].into_iter().filter_map(|name| {
+        let metadata = scripts.join(name).symlink_metadata().ok()?;
+        metadata.is_file().then_some((name, metadata.len()))
+    });
+    let Some((filename, size)) = wrappers.next() else {
+        return false;
+    };
+    if wrappers.next().is_some() {
+        return false;
+    }
+
+    let registered = |site: &Path, record_dirs: &[&str]| {
+        fs::read_dir(site)
+            .into_iter()
+            .flatten()
+            .take(512)
+            .flatten()
+            .any(|entry| {
+                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                name.strip_prefix(package)
+                    .is_some_and(|suffix| suffix.starts_with('-'))
+                    && name.ends_with(".dist-info")
+                    && entry.file_type().is_ok_and(|kind| kind.is_dir())
+                    && python_registration(
+                        &entry.path(),
+                        command,
+                        package,
+                        filename,
+                        size,
+                        record_dirs,
+                    )
+            })
+    };
+    if named(scripts.file_name(), &["bin"]) && named(prefix.file_name(), &[".packages"]) {
+        return registered(prefix, &["../../bin", "bin"]);
+    }
+    if !prefix.join("pyvenv.cfg").is_file() {
+        return false;
+    }
+    if named(scripts.file_name(), &["Scripts"]) {
+        return registered(&prefix.join("Lib/site-packages"), &["../../Scripts"]);
+    }
+    named(scripts.file_name(), &["bin"])
+        && fs::read_dir(prefix.join("lib"))
+            .into_iter()
+            .flatten()
+            .take(24)
+            .flatten()
+            .any(|entry| {
+                entry.file_name().to_string_lossy().starts_with("python3.")
+                    && entry.file_type().is_ok_and(|kind| kind.is_dir())
+                    && registered(&entry.path().join("site-packages"), &["../../../bin"])
+            })
+}
+
+fn python_registration(
+    info: &Path,
+    command: &str,
+    package: &str,
+    file: &str,
+    size: u64,
+    dirs: &[&str],
+) -> bool {
+    let read = |name, limit| {
+        let path = info.join(name);
+        let metadata = path.symlink_metadata().ok()?;
+        if !metadata.is_file() || metadata.len() > limit {
+            return None;
+        }
+        crate::sources::read_manifest_text(&path).ok()
+    };
+    let Some(entries) = read("entry_points.txt", 16 * 1024) else {
+        return false;
+    };
+    let mut console = false;
+    let matches_entry = entries.lines().map(str::trim).any(|line| {
+        if line.starts_with('[') {
+            console = line == "[console_scripts]";
+        }
+        console
+            && line.split_once('=').is_some_and(|(name, target)| {
+                name.trim() == command
+                    && target
+                        .trim()
+                        .split_once('.')
+                        .is_some_and(|(module, _)| module.eq_ignore_ascii_case(package))
+            })
+    });
+    if !matches_entry {
+        return false;
+    }
+    let Some(record) = read("RECORD", 256 * 1024) else {
+        return false;
+    };
+    record.lines().any(|line| {
+        let Some((path, attributes)) = line.split_once(',') else {
+            return false;
+        };
+        let Some((dir, basename)) = path.rsplit_once('/') else {
+            return false;
+        };
+        basename == file
+            && dirs.contains(&dir)
+            && attributes
+                .split_once(',')
+                .and_then(|(_, size)| size.parse().ok())
+                == Some(size)
+    })
 }

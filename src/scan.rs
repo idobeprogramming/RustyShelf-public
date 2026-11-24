@@ -795,6 +795,110 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn registered_python_utilities_are_not_discovered_or_kept_as_games() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let packages = root.join("Project/.packages");
+        let scripts = packages.join("bin");
+        let numpy = packages.join("numpy-2.0.dist-info");
+        let game_package = packages.join("example_game-1.0.dist-info");
+        for directory in [&scripts, &numpy, &game_package] {
+            fs::create_dir_all(directory).unwrap();
+        }
+        fs::write(scripts.join("data.win"), []).unwrap();
+        fs::write(scripts.join("f2py.exe"), [0, 1, 2]).unwrap();
+        fs::write(scripts.join("Arcade.exe"), [0, 1, 2]).unwrap();
+        fs::write(
+            numpy.join("entry_points.txt"),
+            "[console_scripts]\nf2py = numpy.f2py.f2py2e:main\n",
+        )
+        .unwrap();
+        fs::write(
+            numpy.join("RECORD"),
+            "../../bin/f2py.exe,sha256=fixture,3\n",
+        )
+        .unwrap();
+        fs::write(
+            game_package.join("entry_points.txt"),
+            "[console_scripts]\nArcade = example_game.pygame_app:main\n",
+        )
+        .unwrap();
+        fs::write(
+            game_package.join("RECORD"),
+            "../../bin/Arcade.exe,sha256=fixture,3\n",
+        )
+        .unwrap();
+        let candidate = |title, path| {
+            Game::from_installation(
+                title,
+                "À confirmer",
+                Installation {
+                    path,
+                    launcher: Launcher::Unknown,
+                    launch_profile: None,
+                    available: true,
+                },
+            )
+        };
+        let tool = candidate("f2py", scripts.clone());
+        let arcade = candidate("Arcade", scripts.clone());
+        assert!(candidate_from_executable(&scripts.join("f2py.exe")).is_none());
+        assert!(candidate_from_executable(&scripts.join("Arcade.exe")).is_some());
+        assert!(obsolete_candidate(
+            &tool,
+            std::slice::from_ref(&root),
+            &[],
+            &[]
+        ));
+        assert!(!obsolete_candidate(
+            &arcade,
+            std::slice::from_ref(&root),
+            &[],
+            &[]
+        ));
+
+        let sibling = root.join("Independent Game/bin");
+        fs::create_dir_all(&sibling).unwrap();
+        fs::write(sibling.join("data.win"), []).unwrap();
+        fs::write(sibling.join("f2py.exe"), [0, 1, 2]).unwrap();
+        assert!(candidate_from_executable(&sibling.join("f2py.exe")).is_some());
+        fs::write(scripts.join("f2py.exe"), [0, 1, 2, 3]).unwrap();
+        assert!(candidate_from_executable(&scripts.join("f2py.exe")).is_some());
+        assert!(!obsolete_candidate(&tool, &[root], &[], &[]));
+    }
+
+    #[test]
+    fn virtual_environment_console_tools_require_the_correct_script_registration() {
+        let temp = tempdir().unwrap();
+        for (scripts, site, record) in [
+            ("Scripts", "Lib/site-packages", "../../Scripts/pymupdf.exe"),
+            (
+                "bin",
+                "lib/python3.14/site-packages",
+                "../../../bin/pymupdf",
+            ),
+        ] {
+            let env = temp.path().join(scripts);
+            let script_dir = env.join(scripts);
+            let distribution = env.join(site).join("PyMuPDF-1.0.dist-info");
+            fs::create_dir_all(&distribution).unwrap();
+            fs::create_dir_all(&script_dir).unwrap();
+            fs::write(env.join("pyvenv.cfg"), []).unwrap();
+            fs::write(script_dir.join(record.rsplit_once('/').unwrap().1), [0, 1]).unwrap();
+            fs::write(distribution.join("RECORD"), format!("{record},,2\n")).unwrap();
+            let entries = distribution.join("entry_points.txt");
+            fs::write(&entries, "[gui_scripts]\npymupdf = pymupdf.__main__:main\n").unwrap();
+            assert!(!support::auxiliary_program(&script_dir, "pymupdf"));
+            fs::write(
+                &entries,
+                "[console_scripts]\npymupdf = pymupdf.__main__:main\n",
+            )
+            .unwrap();
+            assert!(support::auxiliary_program(&script_dir, "pymupdf"));
+        }
+    }
+
+    #[test]
     fn local_manifests_take_priority_over_internal_game_candidates() {
         let temp = tempdir().unwrap();
         let library = temp.path().join("Archive/steamapps");
